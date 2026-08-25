@@ -1,0 +1,33 @@
+# Rust build output
+/target/
+**/target/
+
+# Cargo lock for libraries (keep for binaries/workspaces)
+# Cargo.lock is intentionally committed for this workspace
+
+# Benchmark data (large snapshots, not for VCS)
+/bench-data/*.gz
+/bench-data/*.xz
+/bench-data/*.zst
+/bench-data/*.deb
+
+# Test fixture .deb files (download on demand)
+**/*.deb
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment / secrets
+.env
+*.pem
+*.key
+
+# Fuzzing corpus and artifacts
+fuzz/corpus/
+fuzz/artifacts/

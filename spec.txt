@@ -1,0 +1,51 @@
+Design Document 1: tpt-deb-toolkit
+
+Status: Draft (Rev 2) | Target: Ubuntu/Debian Package Management Ecosystem
+
+1. Overview & Motivation
+
+The Debian package format (.deb) and the apt/dpkg toolchain are the backbone of Ubuntu. They are written in C/C++, and dependency resolution and package extraction are known pain points at scale.
+
+Prior art check: this is not a blank slate. Jelmer Vernooij's deb822-lossless and debian-analyzer crates already provide pure-Rust parsing for deb822-format control files and sources.list, and there are partial .deb/ar/tar readers in the ecosystem. tpt-deb-toolkit's value proposition isn't "nothing exists in Rust" — it's a complete, workspace-scale, zero-copy pipeline from index fetch through solve through install, with a consistent async story and a resolver aimed at outperforming libsolv/APT's resolver on large dependency graphs. That last claim needs benchmark evidence before it goes in front of Canonical — see §5.
+
+2. Design Principles
+Zero-Copy Parsing: .deb files are ar archives containing tar archives. Use memmap2 and zero-copy parsing to read metadata without loading the whole file into RAM.
+Parallel Resolution: Dependency resolution uses multi-threading and modern SAT-solver heuristics. Performance claims vs. libsolv are a hypothesis to validate, not a given (§5).
+FFI-Free Where It Matters: No bindings to libapt-pkg or dpkg for parsing and format handling. Where existing pure-Rust crates already solve a subproblem well (deb822 parsing), build on them rather than reimplementing — see §6, Reuse Instead of Reimplement.
+Async-First I/O: Network transports and disk I/O are async via tokio.
+Scripts Are Not an Afterthought: Maintainer scripts run arbitrary shell as root during install/remove. This toolkit treats script execution as a first-class, isolable operation, not a detail bolted on at the end.
+3. Workspace Architecture & Crates
+Core Format & Parsing Layer
+tpt-deb-format: Parses the outer ar archive, identifies control.tar.* and data.tar.* payloads. Streaming extraction API.
+tpt-control-file: RFC 822 / deb822 control-file parser. Where deb822-lossless already covers a case well, wrap or depend on it rather than reimplementing; add only what's missing (e.g. stricter multi-stanza validation for Packages indices at scale).
+tpt-deb-version (new in Rev 2, split out of tpt-control-file): Dedicated implementation of Debian's epoch:upstream-version-debian_revision comparison algorithm. This is a well-known correctness minefield (tilde ordering, embedded non-numeric segments, epoch defaults) and deserves its own crate with an exhaustive test suite against known-tricky version pairs from the real archive.
+tpt-deb-diff: Structural diff of two .deb files — metadata, file trees, checksums. Useful for QA and reproducible builds.
+Database & Configuration Layer
+tpt-dpkg-db: Safe, concurrent reader/writer for /var/lib/dpkg/status, using memory-mapped files for concurrent read access.
+tpt-sources-list: Parses/writes /etc/apt/sources.list and deb822 sources.list.d entries, with validation. Builds on tpt-control-file.
+tpt-apt-config: Parses /etc/apt/apt.conf and apt.conf.d, resolving #include directives and type-casting values.
+Resolution & Network Layer
+tpt-apt-solver: Parallel dependency resolver over a constraint graph built from Packages indices, using a DPLL-based SAT solver. Handles conflicts, recommends, and virtual packages. Before any performance claim ships in external docs, this needs a reproducible benchmark harness against real Ubuntu archive snapshots, compared to libsolv and APT's resolver on identical inputs.
+tpt-apt-transport: Async HTTP/HTTPS transport — partial downloads, mirror failover, connection pooling, delta index updates.
+tpt-apt-keyring: OpenPGP verification for Release files, wrapping sequoia-pgp, replacing apt-key.
+Script & Trigger Execution Layer (new in Rev 2)
+tpt-maintainer-scripts: Runs preinst/postinst/prerm/postrm with a well-defined execution contract (ordering, exit-code semantics, DEBIAN_FRONTEND handling). Cross-link: script execution should run inside a tpt-linux-sandbox-rs sandbox by default (namespace + seccomp profile scoped to what maintainer scripts legitimately need), with an explicit opt-out for packages that need broader access, logged and auditable via tpt-audit-logger.
+tpt-dpkg-triggers: Implements the trigger mechanism (activate, deferred trigger processing) that many real-world packages rely on.
+CLI / Integration Layer
+tpt-apt-cli: Lightweight CLI proving out tpt-apt update, tpt-apt install, tpt-apt search.
+4. Data Flow Example: tpt-apt install rustc
+tpt-apt-cli → tpt-sources-list for active repos.
+tpt-apt-transport fetches Packages.gz indices asynchronously.
+tpt-control-file parses indices; tpt-deb-version orders candidates.
+tpt-apt-solver computes the install plan.
+tpt-apt-transport downloads .deb files; tpt-apt-keyring verifies Release signatures before any download is trusted.
+tpt-deb-format streams extraction to the filesystem.
+tpt-maintainer-scripts runs postinst inside a scoped sandbox.
+tpt-dpkg-db updates the status database atomically; tpt-dpkg-triggers processes any deferred triggers.
+5. Open Questions / Validation Needed
+Benchmark plan for tpt-apt-solver vs. libsolv — dataset, hardware, methodology, and what "outperform" means (wall-clock, plan quality, or both).
+Decide how much of deb822-lossless to depend on directly vs. fork/vendor.
+Threat model for tpt-maintainer-scripts default sandbox profile — what's the minimum viable syscall/filesystem allowlist that doesn't break common packages?
+6. Reuse Instead of Reimplement
+
+Before writing a new parser or format handler, check whether deb822-lossless / debian-analyzer already cover it. Where they do, wrap; where they don't (version comparison edge cases, .deb ar/tar streaming, the solver), build fresh. This mirrors the "audit before building" discipline already established for the broader tpt- portfolio.
