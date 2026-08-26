@@ -1,0 +1,16 @@
+[package]
+name = "tpt-l-apt-keyring"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OpenPGP keyring management and Release file verification for APT"
+keywords = ["apt", "gpg", "pgp", "debian", "security"]
+categories = ["cryptography", "authentication"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+pgp = { workspace = true }
+hex = { workspace = true }

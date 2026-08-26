@@ -1,0 +1,25 @@
+[package]
+name = "tpt-l-deb-diff"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Diff between two Debian packages"
+keywords = ["debian", "deb", "diff", "package"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tpt-l-deb-format = { workspace = true }
+tpt-l-control-file = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+xz2 = { workspace = true }
+zstd = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

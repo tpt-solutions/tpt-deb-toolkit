@@ -1,0 +1,24 @@
+[package]
+name = "tpt-l-deb-version-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+notes = "Run with: cargo +nightly fuzz run parse_version"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.tpt-l-deb-version]
+path = "../crates/tpt-l-deb-version"
+
+# Prevent this crate from being part of the parent workspace.
+[workspace]
+
+[[bin]]
+name = "parse_version"
+path = "fuzz_targets/parse_version.rs"
+test = false
+doc = false
+bench = false

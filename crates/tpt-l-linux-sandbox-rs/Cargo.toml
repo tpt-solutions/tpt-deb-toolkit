@@ -1,0 +1,17 @@
+[package]
+name = "tpt-l-linux-sandbox-rs"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Linux namespace and seccomp sandbox for Debian maintainer scripts"
+keywords = ["sandbox", "linux", "seccomp", "namespace", "debian"]
+categories = ["os::linux-apis", "command-line-utilities"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

@@ -1,0 +1,17 @@
+[package]
+name = "tpt-l-apt-solver"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parallel DPLL SAT-based dependency resolver for Debian packages"
+keywords = ["apt", "solver", "dependency", "sat", "debian"]
+categories = ["algorithms", "data-structures"]
+
+[dependencies]
+tpt-l-deb-version = { workspace = true }
+tpt-l-control-file = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+rayon = { workspace = true }

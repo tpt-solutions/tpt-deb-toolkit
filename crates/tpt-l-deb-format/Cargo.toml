@@ -1,0 +1,22 @@
+[package]
+name = "tpt-l-deb-format"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Reader for Debian .deb binary package files (ar + tar archives)"
+keywords = ["debian", "deb", "ar", "tar", "package"]
+categories = ["parsing", "data-structures", "compression"]
+
+[dependencies]
+memmap2 = { workspace = true }
+tpt-l-control-file = { workspace = true }
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+xz2 = { workspace = true }
+zstd = { workspace = true }
+tar = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,0 +1,13 @@
+[package]
+name = "tpt-l-apt-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line interface for the tpt-deb-toolkit APT layer"
+keywords = ["apt", "debian", "cli", "package", "manager"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+thiserror = { workspace = true }

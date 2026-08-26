@@ -1,0 +1,13 @@
+[package]
+name = "tpt-l-maintainer-scripts"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Debian maintainer script execution and sandboxing"
+keywords = ["debian", "dpkg", "maintainer", "scripts", "package"]
+categories = ["os"]
+
+[dependencies]
+thiserror = { workspace = true }

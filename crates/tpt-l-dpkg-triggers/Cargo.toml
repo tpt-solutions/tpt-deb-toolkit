@@ -1,0 +1,13 @@
+[package]
+name = "tpt-l-dpkg-triggers"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "dpkg trigger processing support"
+keywords = ["debian", "dpkg", "triggers", "package"]
+categories = ["os"]
+
+[dependencies]
+thiserror = { workspace = true }

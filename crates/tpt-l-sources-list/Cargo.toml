@@ -1,0 +1,15 @@
+[package]
+name = "tpt-l-sources-list"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parser and writer for APT sources.list and deb822 .sources files"
+keywords = ["apt", "debian", "sources", "repository", "package"]
+categories = ["parsing", "filesystem"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }

@@ -1,0 +1,16 @@
+[package]
+name = "tpt-l-dpkg-db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Concurrent reader/writer for the dpkg package status database"
+keywords = ["debian", "dpkg", "database", "packages", "apt"]
+categories = ["filesystem", "data-structures"]
+
+[dependencies]
+tpt-l-control-file = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

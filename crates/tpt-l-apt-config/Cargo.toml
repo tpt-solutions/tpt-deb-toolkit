@@ -1,0 +1,17 @@
+[package]
+name = "tpt-l-apt-config"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Parser for APT configuration files (apt.conf and apt.conf.d)"
+keywords = ["apt", "debian", "config", "configuration", "package"]
+categories = ["parsing", "configuration"]
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
