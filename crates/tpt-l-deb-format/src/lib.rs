@@ -297,6 +297,51 @@ impl DebFile {
         finish(metadata, control_member, data_member)
     }
 
+    /// Open a `.deb` and return *only* its control metadata, without retaining
+    /// the compressed payload members or building the `data.tar.*` entry list.
+    ///
+    /// This is the "zero-copy metadata read" path: the file is memory-mapped
+    /// (via `memmap2`) and only the `control.tar.*` member is decompressed, so
+    /// the cost is independent of the package's payload size. Use this when you
+    /// only need the `Package`, `Version`, `Architecture`, etc. fields — for
+    /// example when indexing a repository of large packages.
+    pub fn open_metadata(path: &Path) -> Result<DebMetadata, DebError> {
+        let file = std::fs::File::open(path)?;
+        // SAFETY: see `open` — we only read the mapping.
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        Self::parse_metadata(&mmap)
+    }
+
+    /// Parse just the control metadata from a `.deb` byte slice, skipping the
+    /// `data.tar.*` payload entirely.
+    pub fn parse_metadata(data: &[u8]) -> Result<DebMetadata, DebError> {
+        let mut reader = ArReader::new(Cursor::new(data))?;
+
+        let mut metadata: Option<DebMetadata> = None;
+        while let Some(mut entry) = reader.next_entry()? {
+            let name = entry.name().to_string();
+            let mut body = Vec::new();
+            entry.read_to_end(&mut body)?;
+            // `entry` is dropped here, which skips the ar padding byte.
+
+            if name == "debian-binary" {
+                let txt = std::str::from_utf8(&body).unwrap_or("").trim_end();
+                if !txt.starts_with("2.0") {
+                    return Err(DebError::InvalidFormat(format!(
+                        "unsupported deb format version: {txt:?}"
+                    )));
+                }
+            } else if let Some(ext) = name.strip_prefix("control.tar") {
+                metadata = Some(parse_control_tar(&body, ext)?);
+            } else if name.starts_with("data.tar") {
+                // Payload not needed for metadata; stop scanning.
+                break;
+            }
+        }
+
+        metadata.ok_or_else(|| DebError::InvalidFormat("missing control.tar member".into()))
+    }
+
     /// Returns the parsed control metadata.
     pub fn metadata(&self) -> &DebMetadata {
         &self.metadata
@@ -622,6 +667,28 @@ mod tests {
             .map(|e| e.unwrap().path().unwrap().into_owned())
             .collect();
         assert!(names.iter().any(|p| p.ends_with("control")));
+    }
+
+    #[test]
+    fn metadata_only_read_skips_payload() {
+        let bytes = testsupport::synthetic_deb();
+        let meta = DebFile::parse_metadata(&bytes).unwrap();
+        assert_eq!(meta.package_name(), Some("foo"));
+        assert_eq!(meta.version(), Some("1.0-1"));
+        assert_eq!(meta.architecture(), Some("amd64"));
+    }
+
+    #[test]
+    fn metadata_only_open_matches_full_parse() {
+        let bytes = testsupport::synthetic_deb();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("foo.deb");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let meta = DebFile::open_metadata(&path).unwrap();
+        let full = DebFile::open(&path).unwrap();
+        assert_eq!(meta.package_name(), full.metadata().package_name());
+        assert_eq!(meta.version(), full.metadata().version());
     }
 
     #[test]

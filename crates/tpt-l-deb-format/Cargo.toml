@@ -22,3 +22,7 @@ tar = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[[bench]]
+name = "metadata_read"
+harness = false

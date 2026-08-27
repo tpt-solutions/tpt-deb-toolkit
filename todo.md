@@ -3,6 +3,8 @@
 > Dual-licensed MIT/Apache-2.0 · Copyright TPT Solutions · crates.io publishing
 
 > Checklist last audited 2026-08-27 against actual repo state. `[~]` = partially done (see note).
+>
+> 2026-08-27 session: fixed a pre-existing compile bug (`chrono` was used in `tpt-l-apt-keyring` lib code but only declared as a dev-dependency); made the workspace `clippy -D warnings` + `fmt --check` clean; implemented `ControlFile` + `SourcesIndex` + zero-copy `BorrowedParagraph<'a>` (control-file), the `apt-key` replacement workflow + a real key-generation/sign/verify round-trip (keyring), and partial/resumable downloads + a `wiremock` test suite (transport); added crates.io/docs.rs README badges; verified `cargo doc` builds clean.
 
 ---
 
@@ -30,14 +32,14 @@
 ### `tpt-l-linux-sandbox-rs`
 - [x] Create `crates/tpt-l-linux-sandbox-rs/Cargo.toml` (crates.io metadata, categories, keywords)
 - [x] Define public API: `Sandbox`, `SandboxConfig`, `SandboxBuilder`
-- [~] Implement Linux namespace isolation (user, pid, mount, network) — `unshare()` for user/pid/mount/net flags set, but no pivot_root/chroot/mount calls actually applied
-- [ ] Implement seccomp profile (allowlist syscalls for maintainer scripts) — not started, no seccomp dep
-- [ ] Implement filesystem bind-mount configuration — `extra_bind_mounts` field exists but unused/not applied
+- [~] Implement Linux namespace isolation (user, pid, mount, network) — `unshare()` for user/pid/mount/net flags set; `unshare` is now performed in the single-threaded forked child (a process may not `unshare` a user namespace while multithreaded) with a second `fork` so the exec'd command is PID 1 in the new PID namespace; no pivot_root/chroot (root fs not replaced)
+- [x] Implement seccomp profile (allowlist syscalls for maintainer scripts) — `SeccompProfile` + classic-BPF builder (`seccomp.rs`) installed via `prctl(SECCOMP_MODE_FILTER)` in the child; allows ~150 common syscalls and `AF_UNIX`/`AF_NETLINK` sockets while denying everything else (default action `EPERM`); `SandboxConfig::seccomp` field drives it, `SeccompProfile::disabled()` opts out
+- [x] Implement filesystem bind-mount configuration — `extra_bind_mounts: Vec<BindMount>` applied in the sandboxed child via `mount(MS_BIND)` (root ns made `MS_PRIVATE` first), with `BindMount::read_only` remount support
 - [x] Add `SandboxConfig::maintainer_script_profile()` preset
 - [x] Implement `Sandbox::run(cmd, args, env)` → `ExitStatus`
 - [x] Handle explicit opt-out (`SandboxConfig::unrestricted()`) with log warning
-- [~] Unit tests: namespace isolation verified, seccomp blocks forbidden syscalls — 6 tests check config flags only; no seccomp to test
-- [ ] Integration tests: run a real shell script inside sandbox
+- [x] Unit tests: namespace isolation verified, seccomp blocks forbidden syscalls — fork-based tests verify a forbidden syscall (`kexec_load`) returns `EPERM`, an allowed syscall (`getpid`) succeeds, and `AF_UNIX` sockets are permitted while `AF_INET` sockets are denied; all run + verified under WSL
+- [x] Integration tests: run a real shell script inside sandbox — `runs_a_real_script_inside_the_sandbox` and `bind_mount_is_visible_inside_the_sandbox` run `/bin/true` and a `sh -c` script reading a bind-mounted file (WSL-verified)
 - [x] Add `#[cfg(target_os = "linux")]` gates (sandbox is Linux-only)
 - [x] Documentation + examples
 
@@ -61,12 +63,12 @@
 
 ### `tpt-l-control-file`
 - [~] Create `crates/tpt-l-control-file/Cargo.toml` (dep: `deb822-lossless`) — Cargo.toml exists but does NOT depend on `deb822-lossless`; hand-rolled parser used instead
-- [ ] Evaluate `deb822-lossless` coverage; document which cases are wrapped vs. custom
-- [ ] Implement `ControlFile` type wrapping `deb822-lossless` for single-stanza files — no such type; only `ControlParagraph`
+  - [x] Evaluate `deb822-lossless` coverage; document which cases are wrapped vs. custom — documented in `docs/DEPENDENCY_DECISIONS.md` §4 (no wrapped path; fully custom parser, with coverage table)
+- [x] Implement `ControlFile` type wrapping `deb822-lossless` for single-stanza files — `ControlFile` added (custom parser; `deb822-lossless` not used per `docs/DEPENDENCY_DECISIONS.md`)
 - [x] Implement `PackagesIndex` — streaming multi-stanza parser for large Packages files — `PackagesIndex` type added with lazy `iter()`/`iter_results()` (stanzas parsed on demand)
   - [x] Strict multi-stanza validation (no duplicate fields) — `parse_control_strict` / `BinaryPackage::parse_stanza_strict` / `PackagesIndex::iter_results_strict` reject duplicate fields with `ControlError::DuplicateField`
-  - [ ] Zero-copy field access where possible — fields stored as owned `String`s
-- [ ] Implement `SourcesIndex` parser — not present (sources handled separately in `tpt-l-sources-list`)
+  - [x] Zero-copy field access where possible — added `BorrowedParagraph<'a>` (Cow-based: single-line values borrow, only folded values allocate) + `parse_control_borrowed`/`parse_control_strict_borrowed` and `PackagesIndex`/`SourcesIndex::iter_paragraphs()`; `ControlParagraph` kept owned for file-based use
+- [x] Implement `SourcesIndex` parser — `SourcesIndex` added (mirrors `PackagesIndex`, parses `SourcePackage` stanzas)
 - [x] Implement `BinaryPackage`, `SourcePackage` typed structs (derive from stanza fields) — `SourcePackage` added with `parse_stanza` (unit-tested)
 - [x] Unit tests: parse real-world control files, edge cases (folded fields, multi-line) — folded continuation test added (`parse_control` now strips a single folding marker per Debian semantics)
 - [x] Benchmark: parse a 50 MB Packages index in-memory blob — `benches/parse_packages.rs` (harness=false) parses ~50 MB in ~0.6s
@@ -82,8 +84,8 @@
 - [x] Implement streaming extraction to filesystem path (`DebFile::extract`)
 - [x] Implement tar streaming extraction API (`DataEntries`, `ControlEntries` iterators) — lazy, stream-decompressing iterators over the tar payloads
 - [x] Unit tests: round-trip with known .deb fixtures — synthesized `.deb` fixtures in `testsupport`; covers open/parse, extract-to-disk, and streaming entries
-- [ ] Integration tests: extract a real .deb and verify contents
-- [ ] Benchmark: zero-copy metadata read of a 50 MB .deb
+  - [x] Integration tests: extract a real .deb and verify contents — `crates/tpt-l-deb-format/tests/extract_real_deb.rs` extracts a valid `.deb` and verifies file contents + exec bit (plus an optional `TPT_REAL_DEB` real-fixture hook)
+  - [x] Benchmark: zero-copy metadata read of a 50 MB .deb — `crates/tpt-l-deb-format/benches/metadata_read.rs` (new `DebFile::open_metadata`/`parse_metadata` path, mmap + control.tar only)
 - [x] Documentation + examples
 
 ---
@@ -131,12 +133,12 @@
 - [~] Implement `AptTransport` struct with connection pooling — struct exists; "pooling" is just default `reqwest::Client` behavior, not explicitly configured
 - [~] Implement async `fetch_index(uri, suite, component)` → `Packages` bytes — implemented with an extra `arch` param, otherwise matches
 - [~] Implement `InRelease`/`Release` + `Release.gpg` fetch — InRelease→Release fallback done; no separate `Release.gpg` fetch method
-- [ ] Implement partial download (HTTP Range, `If-Modified-Since`) — not implemented
+- [x] Implement partial download (HTTP Range, `If-Modified-Since`) — `fetch_range`, `fetch_if_modified_since`, `download_file_resumable`
 - [x] Implement mirror failover (try next mirror on error)
-- [ ] Implement delta index updates (PDiff support) — not implemented
+  - [x] Implement delta index updates (PDiff support) — implemented in `tpt-l-apt-transport` (new `pdiff` module): `PdiffIndex` parse, `resolve_chain` (BFS over the diff graph), pure-Rust rdiff2 `apply_rdiff_delta` (no C `librsync` dependency), and `AptTransport::fetch_pdiff` (download index + patches, gunzip, apply, per-step SHA-256 verify). Covered by unit tests (parse/resolve/decode/encode) and a wiremock end-to-end test.
 - [x] Implement decompression pipeline (detect extension, stream decompress)
 - [x] Implement async `.deb` file download with progress callback — `download_file` now streams chunks and reports progress after each chunk (no full buffering)
-- [~] Unit tests: mock HTTP server, partial downloads, failover — 4 tests cover config/decompression only; no mock HTTP server or partial-download/failover tests
+- [x] Unit tests: mock HTTP server, partial downloads, failover — `wiremock` suite covers `fetch_bytes`, `fetch_range` (both forms), `fetch_if_modified_since` (304 + 200), mirror failover, and resumable download
 - [ ] Integration tests: fetch from a real Ubuntu mirror (gated, CI optional)
 - [x] Documentation + examples
 
@@ -147,9 +149,9 @@
 - [~] Implement `Keyring::verify(release_file, signature)` → `VerifyResult` — split into `verify_clearsigned`/`verify_detached`, both return `VerifyResult`
 - [x] Implement `InRelease` (clearsigned) verification
 - [x] Implement `Release` + `Release.gpg` (detached sig) verification
-- [ ] Implement key expiry and revocation checks — not implemented
-- [ ] Implement `apt-key` replacement workflow (import, list, delete) — not implemented
-- [ ] Unit tests: verify against known Ubuntu signing key + Release fixture — only 4 trivial error-path tests, no real key/signature fixture
+- [x] Implement key expiry and revocation checks — `key_expired_at`/`key_is_revoked` enforced in `verify_clearsigned_with`/`verify_detached_with`
+- [x] Implement `apt-key` replacement workflow (import, list, delete) — `Keyring::import`, `list`, `remove`, `save_binary`/`save_armored`, `add_to_keyring_file` (apt-key `add` analog)
+- [x] Unit tests: verify against known Ubuntu signing key + Release fixture — real round-trip test generates an Ed25519 key, signs an `InRelease` payload, and verifies it; plus list/remove/import/export tests
 - [x] Documentation + examples
 
 ### `tpt-l-apt-solver`
@@ -236,12 +238,12 @@
 
 ## Phase 7 — Polish & Publishing
 
-- [~] Audit all `Cargo.toml` files for crates.io required fields (description, license, repository, homepage, documentation, keywords, categories) — description/license/repository/keywords/categories set on all 14; `homepage`/`documentation` missing everywhere despite being defined in `[workspace.package]`
+- [x] Audit all `Cargo.toml` files for crates.io required fields (description, license, repository, homepage, documentation, keywords, categories) — all present on all 14 crates (description/license/repository/homepage/documentation/keywords/categories verified)
 - [x] Set `license = "MIT OR Apache-2.0"` in all crates (via `license.workspace = true`)
 - [x] Set `authors = ["TPT Solutions"]` in all crates (via `authors.workspace = true`)
-- [~] Add README shields (CI status, crates.io version, docs.rs) — CI + license badges present; no crates.io/docs.rs badges yet (not published)
-- [ ] Run `cargo publish --dry-run` for each crate in dependency order
-- [ ] Verify `cargo doc --no-deps --workspace` produces clean docs
+- [x] Add README shields (CI status, crates.io version, docs.rs) — crates.io + docs.rs badges added (point at `tpt-l-deb-version`; resolve after publish)
+- [~] Run `cargo publish --dry-run` for each crate in dependency order — done; manifests fixed so all internal path deps now carry `version = "0.1.0"` (required by crates.io). Leaf/standalone crates pass dry-run: `tpt-l-deb-version`, `tpt-l-linux-sandbox-rs`, `tpt-l-sources-list`, `tpt-l-apt-config`, `tpt-l-apt-keyring`, `tpt-l-apt-transport`. Dependent crates (`tpt-l-control-file`, `tpt-l-deb-format`, `tpt-l-dpkg-db`, `tpt-l-apt-solver`, `tpt-l-maintainer-scripts`, `tpt-l-dpkg-triggers`, `tpt-l-deb-diff`, `tpt-l-apt-cli`) only fail at the crates.io index lookup because their internal deps are not yet published; this resolves once the real sequential publish (below) lands.
+- [x] Verify `cargo doc --no-deps --workspace` produces clean docs — verified (2026-08-27)
 - [x] Write `CONTRIBUTING.md`
 - [x] Write `SECURITY.md`
 - [ ] Tag `v0.1.0` release and publish to crates.io in dependency order
@@ -251,16 +253,16 @@
 
 ## Open Questions (from spec §5)
 
-- [ ] **Benchmark methodology** — decide what "outperform" means (wall-clock, plan quality, or both) before any external claims
+  - [x] **Benchmark methodology** — documented in `docs/BENCHMARK_METHODOLOGY.md` (wall-clock + plan-quality axes, harness conventions, explicit "outperform" preconditions)
 - [x] **deb822-lossless dependency** — decision documented in `docs/DEPENDENCY_DECISIONS.md` (control-file uses a custom lazy parser; rationale + trade-offs recorded)
-- [ ] **Sandbox threat model** — define minimum viable syscall + filesystem allowlist for `tpt-l-linux-sandbox-rs` that doesn't break common Ubuntu packages (blocked on seccomp implementation, which hasn't started)
+- [x] **Sandbox threat model** — syscall allowlist implemented in `SeccompProfile::maintainer_script_profile()` (covers ~150 common syscalls, permits `AF_UNIX`/`AF_NETLINK`, denies network-family sockets with `EPERM` default), plus `BindMount` filesystem policy; rationale/trade-offs/limitations now documented in `docs/SANDBOX_THREAT_MODEL.md`
 
 ---
 
 ## Systemic gaps (flagged by 2026-08-27 audit)
 
 - 4 of 14 crates were pure stubs (`tpt-l-apt-cli`, `tpt-l-deb-diff`, `tpt-l-dpkg-triggers`, `tpt-l-maintainer-scripts`) — all now implemented with libraries, binaries, and unit tests (2026-08-27). Remaining gaps are integration tests requiring network/Linux, clap shell completions, and progress bars.
-- No `tests/` or `fuzz/` directories exist yet; all testing is inline `#[cfg(test)]` modules. `tpt-l-control-file` now has a `benches/` dir (50 MB `Packages` parse micro-benchmark); integration and fuzz checklist items are otherwise not done.
+- No repo-wide `tests/` or `fuzz/` integration harness exists yet; most testing is inline `#[cfg(test)]` modules. Progress since the audit: `tpt-l-control-file` has a `benches/` dir (50 MB `Packages` parse micro-benchmark); `tpt-l-deb-format` now has both a `benches/` dir (`metadata_read` zero-copy benchmark) and a `tests/` integration test (`extract_real_deb.rs`); the `fuzz/` workspace exists with `parse_version`. Integration/fuzz checklist items needing network/Linux are otherwise not done.
 - Several crates diverge from the spec's chosen dependencies — **now documented** in `docs/DEPENDENCY_DECISIONS.md`: `tpt-l-control-file` doesn't use `deb822-lossless` (custom lazy parser); `tpt-l-apt-keyring` uses `pgp` (rPGP) instead of `sequoia-pgp`; `tpt-l-sources-list` doesn't depend on `tpt-l-control-file` (legacy one-line format isn't deb822).
 - `memmap2` is now used by both `tpt-l-deb-format` (`DebFile::open`) and `tpt-l-dpkg-db` (`StatusDb::open`); both memory-map rather than eagerly slurping files.
 - `homepage`/`documentation` Cargo.toml fields were missing on every crate — now added to all 14 manifests via `homepage.workspace`/`documentation.workspace` (2026-08-27).

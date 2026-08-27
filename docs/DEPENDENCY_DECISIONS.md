@@ -79,3 +79,43 @@ parser. `tpt-l-sources-list` instead parses both formats locally.
 * The `.sources` (deb822) branch *could* reuse `tpt-l-control-file`, but the
   bespoke parser already covers the required fields (`Types`, `URIs`,
   `Suites`, `Components`, `Signed-By`, `Trusted`). Consolidation is optional.
+
+## 4. `deb822-lossless` coverage evaluation (control-file)
+
+The spec listed `deb822-lossless` as a dependency for control-file parsing
+(todo.md Phase 2, "Evaluate `deb822-lossless` coverage; document which cases are
+wrapped vs. custom"). **`tpt-l-control-file` does not use `deb822-lossless` at
+all** — there is no wrapped code path. Every deb822/control-file surface is a
+custom, hand-rolled parser:
+
+| Surface | Implementation | `deb822-lossless`? |
+| --- | --- | --- |
+| Stanza parsing (lenient) | `parse_control` / `parse_control_borrowed` | custom |
+| Stanza parsing (strict, no dup fields) | `parse_control_strict` / `*_strict_borrowed` | custom |
+| Zero-copy paragraph view | `BorrowedParagraph<'a>` (Cow-based) | custom |
+| `PackagesIndex` (streaming, multi-stanza) | lazy `iter()` / `iter_results()` | custom |
+| `SourcesIndex` (streaming, multi-stanza) | lazy iterators | custom |
+| `BinaryPackage` / `SourcePackage` typed structs | `parse_stanza*` | custom |
+
+### Why no wrapping
+* The crate's design requires **lazy, allocation-light** stanza iteration over
+  very large `Packages`/`Sources` indices. Routing through an owned
+  `Deb822` document would force materialising the whole index first.
+* The **strict mode** (reject duplicate fields with `ControlError::DuplicateField`)
+  is a first-class requirement; expressing it on top of the external type was
+  more invasive than the local parser.
+* Fewer transitive dependencies (no `rtoolbox`/`memchr` chain) keeps the lowest
+  layer lean and easy to cross-compile.
+
+### What we *gain* by not using it
+* Full control over error types and strict/lenient split.
+* Lower-level, borrowable parsing suitable for `memmap2`-backed inputs.
+
+### What we *lose* (trade-offs)
+* No automatic **round-trip preservation** of exact formatting, comments, and
+  field ordering when re-serialising control files. If a deb822 *editor* is ever
+  needed, wrapping `deb822-lossless` for the write path (read path stays custom)
+  is the natural extension — see section 1 follow-ups.
+* Conformance is currently guarded only by hand-written unit tests, not by
+  differential testing against `dpkg`. A pure-deb822 conformance fuzz target
+  (mirroring `fuzz/fuzz_targets/parse_version.rs`) remains a suggested follow-up.

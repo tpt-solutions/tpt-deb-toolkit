@@ -541,9 +541,7 @@ impl Solver {
             .into_par_iter()
             .map(|s| {
                 let mut worker = self.clone();
-                worker.seed = s
-                    .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                    .wrapping_add(1);
+                worker.seed = s.wrapping_mul(0x9E37_79B9_7F4A_7C15).wrapping_add(1);
                 let sat = worker.search(&[]);
                 (sat, worker)
             })
@@ -734,7 +732,8 @@ impl Resolver {
             let mut cands: Vec<usize> = work.by_name.get(name).cloned().unwrap_or_default();
             cands.sort_by(|&a, &b| work.packages[b].version.cmp(&work.packages[a].version));
             for c in cands {
-                let mut assumptions: Vec<Literal> = pinned.iter().map(|&v| Literal::pos(v)).collect();
+                let mut assumptions: Vec<Literal> =
+                    pinned.iter().map(|&v| Literal::pos(v)).collect();
                 assumptions.push(Literal::pos(c));
                 let mut s = Solver::new(n, clauses.clone());
                 if s.solve_with_assumptions(&assumptions) {
@@ -772,9 +771,7 @@ impl Resolver {
                 .collect();
             let mut s = Solver::new(n, clauses.clone());
             if s.solve_with_assumptions(&assumptions) {
-                kept = (0..n)
-                    .filter(|&i| s.assignment[i] == Some(true))
-                    .collect();
+                kept = (0..n).filter(|&i| s.assignment[i] == Some(true)).collect();
                 solver = s;
             }
         }
@@ -829,8 +826,7 @@ impl Resolver {
         // Minimise: drop any selected package that is not a request target, not
         // an installed candidate, and not a pulled-in recommendation — unless it
         // is transitively required to keep the solution satisfiable.
-        let request_names: std::collections::HashSet<&str> =
-            requests.iter().copied().collect();
+        let request_names: std::collections::HashSet<&str> = requests.iter().copied().collect();
         let is_essential = |i: usize| -> bool {
             request_names.contains(work.packages[i].name.as_str())
                 || installed_vars.contains(&i)
@@ -862,7 +858,12 @@ impl Resolver {
 
         let selected: Vec<(String, Version)> = model
             .iter()
-            .map(|&i| (work.packages[i].name.clone(), work.packages[i].version.clone()))
+            .map(|&i| {
+                (
+                    work.packages[i].name.clone(),
+                    work.packages[i].version.clone(),
+                )
+            })
             .collect();
 
         let install = selected
@@ -998,7 +999,11 @@ fn matching_package_indices(u: &Universe, spec: &DependencySpec) -> Vec<usize> {
     if let Some(indices) = u.by_name.get(&spec.name) {
         for &i in indices {
             let pkg = &u.packages[i];
-            if spec.constraint.as_ref().is_none_or(|c| c.satisfies(&pkg.version)) {
+            if spec
+                .constraint
+                .as_ref()
+                .is_none_or(|c| c.satisfies(&pkg.version))
+            {
                 out.push(i);
             }
         }
@@ -1023,24 +1028,25 @@ fn compute_advisories(
     let mut recommended = Vec::new();
     let mut suggested = Vec::new();
 
-    let resolve_group = |u: &Universe, group: &DependencyGroup, out: &mut Vec<(String, Version)>| {
-        // Prefer the highest-version real package satisfying the group.
-        let mut best: Option<(usize, &Package)> = None;
-        for alt in &group.alternatives {
-            for j in matching_package_indices(u, alt) {
-                let pkg = &u.packages[j];
-                match best {
-                    Some((_, b)) if b.version >= pkg.version => {}
-                    _ => best = Some((j, pkg)),
+    let resolve_group =
+        |u: &Universe, group: &DependencyGroup, out: &mut Vec<(String, Version)>| {
+            // Prefer the highest-version real package satisfying the group.
+            let mut best: Option<(usize, &Package)> = None;
+            for alt in &group.alternatives {
+                for j in matching_package_indices(u, alt) {
+                    let pkg = &u.packages[j];
+                    match best {
+                        Some((_, b)) if b.version >= pkg.version => {}
+                        _ => best = Some((j, pkg)),
+                    }
                 }
             }
-        }
-        if let Some((_, pkg)) = best {
-            if !out.iter().any(|(n, v)| n == &pkg.name && v == &pkg.version) {
-                out.push((pkg.name.clone(), pkg.version.clone()));
+            if let Some((_, pkg)) = best {
+                if !out.iter().any(|(n, v)| n == &pkg.name && v == &pkg.version) {
+                    out.push((pkg.name.clone(), pkg.version.clone()));
+                }
             }
-        }
-    };
+        };
 
     for (i, pkg) in u.packages.iter().enumerate() {
         if assignment[i] != Some(true) {
@@ -1348,7 +1354,10 @@ mod tests {
                 for _ in 0..len {
                     let v = (lcg(&mut state) as usize) % n;
                     let neg = (lcg(&mut state) & 1) == 1;
-                    lits.push(Literal { var: v, negated: neg });
+                    lits.push(Literal {
+                        var: v,
+                        negated: neg,
+                    });
                 }
                 clauses.push(Clause { literals: lits });
             }
@@ -1398,9 +1407,7 @@ mod tests {
     fn recommends_pulled_in() {
         let mut u = Universe::new();
         u.add_package(pkg_with(
-            "A",
-            "1.0",
-            "B", // recommends B
+            "A", "1.0", "B", // recommends B
             "",
         ));
         u.add_package(pkg("B", "1.0"));
@@ -1410,7 +1417,11 @@ mod tests {
         assert!(names.contains(&"A"));
         assert!(names.contains(&"B"), "recommended B missing: {:?}", names);
         let rec_names: Vec<&str> = plan.recommended.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(rec_names.contains(&"B"), "recommended list: {:?}", rec_names);
+        assert!(
+            rec_names.contains(&"B"),
+            "recommended list: {:?}",
+            rec_names
+        );
     }
 
     #[test]
@@ -1423,8 +1434,16 @@ mod tests {
         let plan = Resolver::new(u)
             .resolve_with_installed(&["A"], &[("A".to_string(), Version::parse("1.0").unwrap())])
             .unwrap();
-        assert!(plan.remove.is_empty(), "spurious removal: {:?}", plan.remove);
-        assert!(plan.install.is_empty(), "spurious install: {:?}", plan.install);
+        assert!(
+            plan.remove.is_empty(),
+            "spurious removal: {:?}",
+            plan.remove
+        );
+        assert!(
+            plan.install.is_empty(),
+            "spurious install: {:?}",
+            plan.install
+        );
     }
 
     #[test]
@@ -1437,12 +1456,14 @@ mod tests {
             .resolve_with_installed(&["A"], &[("A".to_string(), Version::parse("1.0").unwrap())])
             .unwrap();
         assert!(
-            plan.install.contains(&("A".to_string(), Version::parse("2.0").unwrap())),
+            plan.install
+                .contains(&("A".to_string(), Version::parse("2.0").unwrap())),
             "plan={:?}",
             plan.install
         );
         assert!(
-            plan.remove.contains(&("A".to_string(), Version::parse("1.0").unwrap())),
+            plan.remove
+                .contains(&("A".to_string(), Version::parse("1.0").unwrap())),
             "plan={:?}",
             plan.remove
         );
@@ -1474,7 +1495,8 @@ mod tests {
             )
             .unwrap();
         assert!(
-            plan.remove.contains(&("old".to_string(), Version::parse("1.0").unwrap())),
+            plan.remove
+                .contains(&("old".to_string(), Version::parse("1.0").unwrap())),
             "plan={:?}",
             plan.remove
         );

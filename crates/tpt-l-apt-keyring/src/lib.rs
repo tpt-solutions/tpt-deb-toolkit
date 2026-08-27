@@ -20,7 +20,9 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use pgp::composed::cleartext::CleartextSignedMessage;
 use pgp::composed::{Deserializable, SignedPublicKey, StandaloneSignature};
+use pgp::ser::Serialize;
 use pgp::types::{Fingerprint, PublicKeyTrait};
+use pgp::ArmorOptions;
 use thiserror::Error;
 
 // ─── Errors ───────────────────────────────────────────────────────────────────
@@ -69,7 +71,7 @@ pub struct VerifyResult {
 /// expired nor revoked *at the reference time* (which defaults to "now").
 /// Relaxing `allow_expired`/`allow_revoked` mirrors `apt`'s
 /// `--allow-downgrades`/`--force` style escape hatches.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct VerificationPolicy {
     /// Time against which key expiry is checked. `None` means "now".
     pub reference_time: Option<DateTime<Utc>>,
@@ -79,21 +81,22 @@ pub struct VerificationPolicy {
     pub allow_revoked: bool,
 }
 
-impl Default for VerificationPolicy {
-    fn default() -> Self {
-        Self {
-            reference_time: None,
-            allow_expired: false,
-            allow_revoked: false,
-        }
-    }
-}
-
 // ─── Keyring ──────────────────────────────────────────────────────────────────
 
 /// A collection of trusted OpenPGP certificates used to verify APT metadata.
 pub struct Keyring {
     keys: Vec<SignedPublicKey>,
+}
+
+/// Metadata describing a single certificate in a [`Keyring`].
+#[derive(Debug, Clone)]
+pub struct KeyInfo {
+    /// Fingerprint of the primary key.
+    pub fingerprint: KeyId,
+    /// User IDs (UIDs) bound to the key by self-signature.
+    pub user_ids: Vec<String>,
+    /// Expiry timestamp, if the key has a finite validity period.
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 impl Keyring {
@@ -110,6 +113,101 @@ impl Keyring {
     /// Add all certificates from `other` into this keyring.
     pub fn merge(&mut self, other: Keyring) {
         self.keys.extend(other.keys);
+    }
+
+    /// Return metadata about every certificate in the keyring.
+    pub fn list(&self) -> Vec<KeyInfo> {
+        self.keys
+            .iter()
+            .map(|key| {
+                let user_ids = key
+                    .details
+                    .users
+                    .iter()
+                    .map(|u| String::from_utf8_lossy(u.id.id().as_ref()).into_owned())
+                    .collect();
+                KeyInfo {
+                    fingerprint: KeyId(fp_hex(&key.fingerprint())),
+                    user_ids,
+                    expires_at: key.expires_at(),
+                }
+            })
+            .collect()
+    }
+
+    /// Parse and merge the certificates found in `data` into this keyring.
+    ///
+    /// Mirrors `apt-key add`: unknown/garbage bytes are skipped per-key, but an
+    /// entirely empty input still errors via [`KeyringError::Load`].
+    pub fn import(&mut self, data: &[u8]) -> Result<(), KeyringError> {
+        let other = Self::load_bytes(data)?;
+        self.keys.extend(other.keys);
+        Ok(())
+    }
+
+    /// Remove every certificate whose fingerprint (hex, case-insensitive)
+    /// equals `fingerprint`. Returns the number of certificates removed.
+    pub fn remove(&mut self, fingerprint: &str) -> usize {
+        let target = fingerprint.to_lowercase();
+        let before = self.keys.len();
+        self.keys
+            .retain(|k| fp_hex(&k.fingerprint()).to_lowercase() != target);
+        before - self.keys.len()
+    }
+
+    /// Remove a certificate by its [`KeyId`]. Returns the number removed (0 or 1).
+    pub fn remove_by_id(&mut self, id: &KeyId) -> usize {
+        self.remove(&id.0)
+    }
+
+    /// Serialize every certificate as a binary (GPG) keyring to `path`.
+    pub fn save_binary(&self, path: &Path) -> Result<(), KeyringError> {
+        let mut buf = Vec::new();
+        for key in &self.keys {
+            let bytes = key
+                .to_bytes()
+                .map_err(|e| KeyringError::Load(e.to_string()))?;
+            buf.extend_from_slice(&bytes);
+        }
+        std::fs::write(path, buf)?;
+        Ok(())
+    }
+
+    /// Serialize every certificate as an ASCII-armored keyring to `path`.
+    pub fn save_armored(&self, path: &Path) -> Result<(), KeyringError> {
+        let mut buf = Vec::new();
+        for key in &self.keys {
+            let bytes = key
+                .to_armored_bytes(ArmorOptions::default())
+                .map_err(|e| KeyringError::Load(e.to_string()))?;
+            buf.extend_from_slice(&bytes);
+            buf.push(b'\n');
+        }
+        std::fs::write(path, buf)?;
+        Ok(())
+    }
+
+    /// `apt-key add` replacement: load the existing keyring at `path` (or start
+    /// a new one if the file does not exist), import `data`, and write it back
+    /// in the format implied by the file extension (`.asc` → armored, else
+    /// binary).
+    pub fn add_to_keyring_file(path: &Path, data: &[u8]) -> Result<(), KeyringError> {
+        let mut kr = if path.exists() {
+            Self::load(path)?
+        } else {
+            Self::empty()
+        };
+        kr.import(data)?;
+        let armored = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("asc"))
+            .unwrap_or(false);
+        if armored {
+            kr.save_armored(path)
+        } else {
+            kr.save_binary(path)
+        }
     }
 
     /// Load certificates from a `.gpg` (binary) or `.asc` (armored) file.
@@ -356,5 +454,108 @@ mod tests {
     fn load_bytes_errors_on_garbage() {
         let result = Keyring::load_bytes(b"not pgp data at all!!");
         assert!(result.is_err());
+    }
+
+    use pgp::composed::key::{KeyType, SecretKeyParamsBuilder};
+    use pgp::composed::SignedSecretKey;
+    use pgp::ArmorOptions;
+    use rand::thread_rng;
+
+    /// Generate a fresh self-signed Ed25519 key (signing + certify capable).
+    fn generate_test_key() -> (SignedSecretKey, SignedPublicKey) {
+        let mut rng = thread_rng();
+        let params = SecretKeyParamsBuilder::default()
+            .key_type(KeyType::Ed25519)
+            .can_sign(true)
+            .can_certify(true)
+            .primary_user_id("tpt test key <test@tpt.example>".to_string())
+            .build()
+            .expect("build key params");
+        let secret = params.generate(&mut rng).expect("generate key");
+        let signed = secret.sign(&mut rng, String::new).expect("self-sign key");
+        let public: SignedPublicKey = signed.clone().into();
+        (signed, public)
+    }
+
+    #[test]
+    fn workflow_list_and_remove() {
+        let (_, public) = generate_test_key();
+        let mut kr = Keyring { keys: vec![public] };
+        assert_eq!(kr.key_count(), 1);
+
+        let info = &kr.list()[0];
+        assert_eq!(info.user_ids, vec!["tpt test key <test@tpt.example>"]);
+        assert!(!info.fingerprint.0.is_empty());
+
+        let removed = kr.remove(&info.fingerprint.0);
+        assert_eq!(removed, 1);
+        assert_eq!(kr.key_count(), 0);
+    }
+
+    #[test]
+    fn workflow_import_and_export_armored_roundtrip() {
+        let (_, public) = generate_test_key();
+        let kr = Keyring {
+            keys: vec![public.clone()],
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keyring.asc");
+
+        kr.save_armored(&path).unwrap();
+        let reloaded = Keyring::load(&path).unwrap();
+        assert_eq!(reloaded.key_count(), 1);
+        assert_eq!(
+            reloaded.list()[0].fingerprint.0,
+            fp_hex(&public.fingerprint())
+        );
+    }
+
+    #[test]
+    fn workflow_add_to_keyring_file_appends() {
+        let (_, public_a) = generate_test_key();
+        let (_, public_b) = generate_test_key();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trusted.gpg");
+
+        Keyring {
+            keys: vec![public_a],
+        }
+        .save_binary(&path)
+        .unwrap();
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&public_b.to_armored_bytes(ArmorOptions::default()).unwrap());
+        Keyring::add_to_keyring_file(&path, &buf).unwrap();
+
+        let reloaded = Keyring::load(&path).unwrap();
+        assert_eq!(reloaded.key_count(), 2);
+    }
+
+    #[test]
+    fn verify_real_generated_key_succeeds() {
+        let (signed, public) = generate_test_key();
+        let mut rng = thread_rng();
+        let text = "Origin: Debian\nLabel: Debian\nSuite: stable\n";
+        let msg = CleartextSignedMessage::sign(&mut rng, text, &signed, String::new).unwrap();
+        let armored = msg.to_armored_bytes(ArmorOptions::default()).unwrap();
+
+        let kr = Keyring { keys: vec![public] };
+        let result = kr.verify_clearsigned(&armored).expect("valid signature");
+        assert_eq!(result.signed_by.len(), 1);
+        assert!(String::from_utf8_lossy(&result.message).contains("Suite: stable"));
+    }
+
+    #[test]
+    fn verify_fails_with_wrong_key() {
+        let (signed, _) = generate_test_key();
+        let (_, other_public) = generate_test_key();
+        let mut rng = thread_rng();
+        let msg = CleartextSignedMessage::sign(&mut rng, "data", &signed, String::new).unwrap();
+        let armored = msg.to_armored_bytes(ArmorOptions::default()).unwrap();
+
+        let kr = Keyring {
+            keys: vec![other_public],
+        };
+        assert!(kr.verify_clearsigned(&armored).is_err());
     }
 }

@@ -17,6 +17,12 @@ pub struct ExitStatus;
 
 use thiserror::Error;
 
+mod mount;
+mod seccomp;
+
+pub use mount::BindMount;
+pub use seccomp::{SeccompAction, SeccompProfile, SeccompRule};
+
 /// Errors that can occur when creating or running a sandbox.
 #[derive(Debug, Error)]
 pub enum SandboxError {
@@ -43,6 +49,10 @@ pub enum SandboxError {
         dst: PathBuf,
         reason: String,
     },
+
+    /// A seccomp filter could not be installed.
+    #[error("seccomp install failed: {0}")]
+    SeccompInstall(String),
 }
 
 /// Configuration controlling what resources a sandboxed process can access.
@@ -59,8 +69,16 @@ pub struct SandboxConfig {
 
     /// Additional bind mounts to establish inside the sandbox.
     ///
-    /// Each tuple is `(source_on_host, destination_inside_sandbox)`.
-    pub extra_bind_mounts: Vec<(PathBuf, PathBuf)>,
+    /// Each entry maps a `source` on the host to a `destination` inside the
+    /// sandbox. Mounts are applied to the sandboxed child before the target
+    /// command is executed; set [`BindMount::read_only`] to expose a path
+    /// without write access.
+    pub extra_bind_mounts: Vec<BindMount>,
+
+    /// Seccomp syscall allowlist applied to the sandboxed process.
+    ///
+    /// Defaults to [`SeccompProfile::maintainer_script_profile`].
+    pub seccomp: SeccompProfile,
 }
 
 impl Default for SandboxConfig {
@@ -79,6 +97,7 @@ impl SandboxConfig {
             allow_network: false,
             allow_ipc: false,
             extra_bind_mounts: Vec::new(),
+            seccomp: SeccompProfile::maintainer_script_profile(),
         }
     }
 
@@ -94,13 +113,17 @@ impl SandboxConfig {
             allow_network: true,
             allow_ipc: true,
             extra_bind_mounts: Vec::new(),
+            seccomp: SeccompProfile::disabled(),
         }
     }
 
     /// Returns `true` if isolation should be skipped entirely.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     fn is_unrestricted(&self) -> bool {
-        self.allow_network && self.allow_ipc && self.extra_bind_mounts.is_empty()
+        self.allow_network
+            && self.allow_ipc
+            && self.extra_bind_mounts.is_empty()
+            && !self.seccomp.enabled
     }
 }
 
@@ -216,10 +239,12 @@ impl Sandbox {
 
     /// Runs the command inside new Linux namespaces.
     ///
-    /// We use `unshare(2)` to create new user + PID + mount + network
-    /// namespaces in the parent, then `fork(2)` + `exec` the target.
-    /// UID/GID mapping (0→0) is written so the child appears to be root
-    /// inside its user namespace.
+    /// Namespace setup is performed in a single-threaded child (a process may
+    /// not `unshare(2)` a user namespace while it still has multiple threads,
+    /// which is always the case inside `cargo test`).  A second `fork(2)` after
+    /// `unshare(CLONE_NEWPID)` ensures the exec'd command becomes PID 1 in the
+    /// new PID namespace.  UID/GID mapping (real uid/gid → 0) is written so the
+    /// child appears to be root inside its user namespace.
     #[cfg(target_os = "linux")]
     fn run_namespaced(
         &self,
@@ -240,36 +265,12 @@ impl Sandbox {
             flags |= libc::CLONE_NEWIPC;
         }
 
+        // Real uid/gid of the caller, used for the user-namespace id map.
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
 
-        // unshare into new namespaces
-        let ret = unsafe { libc::unshare(flags) };
-        if ret != 0 {
-            let err = std::io::Error::last_os_error();
-            return Err(SandboxError::NamespaceSetup(format!(
-                "unshare(0x{:x}) failed: {}",
-                flags, err
-            )));
-        }
-
-        // Write UID/GID maps so the child process appears as root in the new
-        // user namespace.  We must write "deny" to setgroups before writing
-        // the gid_map.
-        let pid = unsafe { libc::getpid() };
-        let uid_map = format!("0 {} 1\n", uid);
-        let gid_map = format!("0 {} 1\n", gid);
-
-        std::fs::write(format!("/proc/{}/uid_map", pid), uid_map.as_bytes())
-            .map_err(|e| SandboxError::NamespaceSetup(format!("uid_map: {}", e)))?;
-
-        std::fs::write(format!("/proc/{}/setgroups", pid), b"deny")
-            .map_err(|e| SandboxError::NamespaceSetup(format!("setgroups: {}", e)))?;
-
-        std::fs::write(format!("/proc/{}/gid_map", pid), gid_map.as_bytes())
-            .map_err(|e| SandboxError::NamespaceSetup(format!("gid_map: {}", e)))?;
-
-        // Build argv and envp for execvp
+        // Build argv/envp CStrings in the parent (malloc is unsafe in the
+        // post-fork child because the malloc lock may be held by another thread).
         let c_cmd = CString::new(cmd).map_err(|e| SandboxError::SpawnFailed(e.to_string()))?;
         let mut c_args: Vec<CString> = Vec::with_capacity(args.len() + 1);
         c_args.push(c_cmd.clone());
@@ -281,14 +282,15 @@ impl Sandbox {
             let pair = format!("{}={}", k, v);
             c_env.push(CString::new(pair).map_err(|e| SandboxError::SpawnFailed(e.to_string()))?);
         }
-
-        // Pointers for execvpe
         let mut argv_ptrs: Vec<*const libc::c_char> = c_args.iter().map(|s| s.as_ptr()).collect();
         argv_ptrs.push(std::ptr::null());
         let mut envp_ptrs: Vec<*const libc::c_char> = c_env.iter().map(|s| s.as_ptr()).collect();
         envp_ptrs.push(std::ptr::null());
 
-        // Fork the child
+        let bind_mounts = &self.config.extra_bind_mounts;
+        let seccomp_profile = &self.config.seccomp;
+
+        // Fork: the child is now single-threaded and may unshare(CLONE_NEWUSER).
         let child_pid = unsafe { libc::fork() };
         match child_pid {
             -1 => {
@@ -296,15 +298,58 @@ impl Sandbox {
                 Err(SandboxError::SpawnFailed(format!("fork failed: {}", err)))
             }
             0 => {
-                // Child process: exec
+                // Middle child: set up namespaces then fork again so the
+                // grandchild exec's as PID 1 in the new PID namespace.
                 unsafe {
-                    libc::execvpe(c_cmd.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
-                    // If we get here, exec failed
-                    libc::_exit(127);
+                    if libc::unshare(flags) != 0 {
+                        let err = std::io::Error::last_os_error();
+                        eprintln!("sandbox unshare(0x{:x}) failed: {}", flags, err);
+                        libc::_exit(127);
+                    }
+
+                    // Write UID/GID maps for the new user namespace.  setgroups
+                    // must be denied before the gid_map can be written.
+                    let uid_map = format!("0 {} 1\n", uid);
+                    let gid_map = format!("0 {} 1\n", gid);
+                    let _ = std::fs::write("/proc/self/uid_map", uid_map.as_bytes());
+                    let _ = std::fs::write("/proc/self/setgroups", b"deny");
+                    let _ = std::fs::write("/proc/self/gid_map", gid_map.as_bytes());
+
+                    let grandchild = libc::fork();
+                    match grandchild {
+                        -1 => libc::_exit(127),
+                        0 => {
+                            // Grandchild: apply restrictions, then exec.
+                            if let Err(e) = mount::apply_bind_mounts(bind_mounts) {
+                                eprintln!("sandbox bind mount failed: {}", e);
+                                libc::_exit(127);
+                            }
+                            if let Err(e) = seccomp::install_seccomp(seccomp_profile) {
+                                eprintln!("sandbox seccomp install failed: {}", e);
+                                libc::_exit(127);
+                            }
+                            libc::execvpe(c_cmd.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
+                            libc::_exit(127);
+                        }
+                        _ => {
+                            // Middle child: wait for the grandchild and propagate
+                            // its exit status (or 128+signal) to the parent.
+                            let mut wstatus: libc::c_int = 0;
+                            libc::waitpid(grandchild, &mut wstatus, 0);
+                            let code = if libc::WIFEXITED(wstatus) {
+                                libc::WEXITSTATUS(wstatus)
+                            } else if libc::WIFSIGNALED(wstatus) {
+                                128 + libc::WTERMSIG(wstatus)
+                            } else {
+                                127
+                            };
+                            libc::_exit(code);
+                        }
+                    }
                 }
             }
             _ => {
-                // Parent: wait for child
+                // Parent: wait for the middle child.
                 let mut wstatus: libc::c_int = 0;
                 loop {
                     let ret = unsafe { libc::waitpid(child_pid, &mut wstatus, 0) };
@@ -400,5 +445,39 @@ mod tests {
         let sandbox = Sandbox::new();
         let result = sandbox.run("echo", &["hello"], &[]);
         assert!(matches!(result, Err(SandboxError::UnsupportedPlatform)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runs_a_real_script_inside_the_sandbox() {
+        let sandbox = Sandbox::new();
+        let status = sandbox
+            .run("/bin/true", &[], &[])
+            .expect("sandbox should run /bin/true");
+        assert!(status.success(), "sandboxed /bin/true must exit 0");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bind_mount_is_visible_inside_the_sandbox() {
+        use std::io::Write;
+        let host = tempfile::NamedTempFile::new().expect("temp file");
+        host.as_file()
+            .write_all(b"hello-sandbox")
+            .expect("write marker");
+        let dest = tempfile::tempdir().expect("temp dir").keep().join("flag");
+        let mut cfg = SandboxConfig::maintainer_script_profile();
+        cfg.extra_bind_mounts
+            .push(BindMount::read_only(host.path(), &dest));
+        let sandbox = SandboxBuilder::new().config(cfg).build();
+
+        let script = format!("test \"$(cat {})\" = hello-sandbox", dest.display());
+        let status = sandbox
+            .run("/bin/sh", &["-c", &script], &[])
+            .expect("sandbox should run script");
+        assert!(
+            status.success(),
+            "sandboxed script must read the bind-mounted file"
+        );
     }
 }

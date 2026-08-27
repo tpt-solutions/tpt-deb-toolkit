@@ -20,3 +20,10 @@ xz2 = { workspace = true }
 zstd = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+chrono = "0.4"
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+wiremock = "0.6"
+tempfile = { workspace = true }

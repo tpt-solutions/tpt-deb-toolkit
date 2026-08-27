@@ -28,19 +28,19 @@ documentation = "https://docs.rs/tpt-deb-toolkit"
 
 [workspace.dependencies]
 # Internal crates
-tpt-l-linux-sandbox-rs = { path = "crates/tpt-l-linux-sandbox-rs" }
-tpt-l-deb-version = { path = "crates/tpt-l-deb-version" }
-tpt-l-control-file = { path = "crates/tpt-l-control-file" }
-tpt-l-deb-format = { path = "crates/tpt-l-deb-format" }
-tpt-l-dpkg-db = { path = "crates/tpt-l-dpkg-db" }
-tpt-l-sources-list = { path = "crates/tpt-l-sources-list" }
-tpt-l-apt-config = { path = "crates/tpt-l-apt-config" }
-tpt-l-apt-transport = { path = "crates/tpt-l-apt-transport" }
-tpt-l-apt-keyring = { path = "crates/tpt-l-apt-keyring" }
-tpt-l-apt-solver = { path = "crates/tpt-l-apt-solver" }
-tpt-l-maintainer-scripts = { path = "crates/tpt-l-maintainer-scripts" }
-tpt-l-dpkg-triggers = { path = "crates/tpt-l-dpkg-triggers" }
-tpt-l-deb-diff = { path = "crates/tpt-l-deb-diff" }
+tpt-l-linux-sandbox-rs = { path = "crates/tpt-l-linux-sandbox-rs", version = "0.1.0" }
+tpt-l-deb-version = { path = "crates/tpt-l-deb-version", version = "0.1.0" }
+tpt-l-control-file = { path = "crates/tpt-l-control-file", version = "0.1.0" }
+tpt-l-deb-format = { path = "crates/tpt-l-deb-format", version = "0.1.0" }
+tpt-l-dpkg-db = { path = "crates/tpt-l-dpkg-db", version = "0.1.0" }
+tpt-l-sources-list = { path = "crates/tpt-l-sources-list", version = "0.1.0" }
+tpt-l-apt-config = { path = "crates/tpt-l-apt-config", version = "0.1.0" }
+tpt-l-apt-transport = { path = "crates/tpt-l-apt-transport", version = "0.1.0" }
+tpt-l-apt-keyring = { path = "crates/tpt-l-apt-keyring", version = "0.1.0" }
+tpt-l-apt-solver = { path = "crates/tpt-l-apt-solver", version = "0.1.0" }
+tpt-l-maintainer-scripts = { path = "crates/tpt-l-maintainer-scripts", version = "0.1.0" }
+tpt-l-dpkg-triggers = { path = "crates/tpt-l-dpkg-triggers", version = "0.1.0" }
+tpt-l-deb-diff = { path = "crates/tpt-l-deb-diff", version = "0.1.0" }
 
 # External crates
 anyhow = "1"
