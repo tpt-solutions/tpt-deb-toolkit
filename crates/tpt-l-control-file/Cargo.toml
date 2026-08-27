@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 description = "Debian control file parsing: binary packages, source packages, and stanzas"
 keywords = ["debian", "control", "apt", "dpkg", "package"]
 categories = ["parsing", "data-structures"]
@@ -12,3 +14,7 @@ categories = ["parsing", "data-structures"]
 [dependencies]
 tpt-l-deb-version = { workspace = true }
 thiserror = { workspace = true }
+
+[[bench]]
+name = "parse_packages"
+harness = false

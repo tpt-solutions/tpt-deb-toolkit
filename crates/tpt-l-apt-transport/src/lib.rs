@@ -207,7 +207,9 @@ impl AptTransport {
 
     /// Stream-download `url` to `dest`.
     ///
-    /// `progress` is called with `(bytes_downloaded, total_bytes)`.
+    /// The response body is written to `dest` incrementally as chunks arrive
+    /// (it is *not* buffered entirely in memory first), and `progress` is
+    /// invoked after each chunk with `(bytes_downloaded, total_bytes)`.
     /// `total_bytes` is `0` when the server omits `Content-Length`.
     pub async fn download_file(
         &self,
@@ -215,6 +217,7 @@ impl AptTransport {
         dest: &Path,
         progress: Option<Box<dyn Fn(u64, u64) + Send>>,
     ) -> Result<(), TransportError> {
+        use futures_util::StreamExt;
         use tokio::fs::File;
 
         let resp = self.client.get(url).send().await?;
@@ -222,14 +225,18 @@ impl AptTransport {
             return Err(TransportError::Http(resp.status()));
         }
         let total = resp.content_length().unwrap_or(0);
-        let data = resp.bytes().await?;
-        let downloaded = data.len() as u64;
         let mut file = File::create(dest).await?;
-        file.write_all(&data).await?;
-        file.flush().await?;
-        if let Some(ref cb) = progress {
-            cb(downloaded, total.max(downloaded));
+        let mut downloaded: u64 = 0;
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            file.write_all(&chunk).await?;
+            downloaded += chunk.len() as u64;
+            if let Some(ref cb) = progress {
+                cb(downloaded, total.max(downloaded));
+            }
         }
+        file.flush().await?;
         Ok(())
     }
 }

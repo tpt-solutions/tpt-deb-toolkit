@@ -28,6 +28,10 @@ use std::collections::HashMap;
 use std::path::Path;
 use thiserror::Error;
 
+/// Identity shared by entries that should be grouped into one deb822 stanza:
+/// `(uri, suite, components, options, enabled)`.
+type GroupKey = (String, String, String, HashMap<String, String>, bool);
+
 // ── Error ─────────────────────────────────────────────────────────────────────
 
 /// Errors produced by the sources-list parser.
@@ -307,6 +311,142 @@ impl SourcesList {
         }
         out
     }
+
+    /// Serialise all entries to deb822 `.sources` format.
+    ///
+    /// Entries are grouped by `(uri, suite, components, options, enabled)` so
+    /// that the `Types:` field can list every source type sharing that
+    /// identity (e.g. `deb deb-src`).
+    pub fn write_deb822(&self) -> String {
+        // Group key: identity shared across the Types axis.
+        let mut groups: Vec<GroupKey> = Vec::new();
+        let mut types_by_group: HashMap<usize, Vec<SourceType>> = HashMap::new();
+
+        for entry in &self.entries {
+            let comp_key = entry.components.join(" ");
+            let key = (
+                entry.uri.clone(),
+                entry.suite.clone(),
+                comp_key,
+                entry.options.clone(),
+                entry.enabled,
+            );
+            let idx = if let Some(pos) = groups.iter().position(|g| {
+                g.0 == key.0 && g.1 == key.1 && g.2 == key.2 && g.3 == key.3 && g.4 == key.4
+            }) {
+                pos
+            } else {
+                groups.push(key);
+                groups.len() - 1
+            };
+            types_by_group
+                .entry(idx)
+                .or_default()
+                .push(entry.source_type);
+        }
+
+        let mut out = String::new();
+        for (i, (uri, suite, comps, options, enabled)) in groups.iter().enumerate() {
+            let types = types_by_group.get(&i).cloned().unwrap_or_default();
+            let types_str: Vec<&str> = types.iter().map(|t| t.as_str()).collect();
+            out.push_str(&format!("Types: {}\n", types_str.join(" ")));
+            out.push_str(&format!("URIs: {}\n", uri));
+            out.push_str(&format!("Suites: {}\n", suite));
+            out.push_str(&format!("Components: {}\n", comps));
+            out.push_str(&format!(
+                "Enabled: {}\n",
+                if *enabled { "yes" } else { "no" }
+            ));
+            if let Some(sb) = options.get("signed-by") {
+                out.push_str(&format!("Signed-By: {}\n", sb));
+            }
+            if let Some(arch) = options.get("arch") {
+                out.push_str(&format!("Architectures: {}\n", arch));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// Write the sources list to `path`, choosing the format by extension:
+    /// `.sources` → deb822, otherwise one-line.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourcesError::Io`] if the file cannot be written.
+    pub fn write(&self, path: &Path) -> Result<(), SourcesError> {
+        let body = if path.extension().and_then(|e| e.to_str()) == Some("sources") {
+            self.write_deb822()
+        } else {
+            self.write_one_line()
+        };
+        std::fs::write(path, body)?;
+        Ok(())
+    }
+
+    /// Validate every entry's URI.
+    ///
+    /// A valid URI has the form `<scheme>://<rest>` where `<scheme>` is a
+    /// recognised APT scheme (`http`, `https`, `ftp`, `file`, `mirror+http`,
+    /// `mirror+https`, `cdrom`) and `<rest>` is non-empty with no whitespace.
+    pub fn validate(&self) -> Result<(), SourcesError> {
+        for entry in &self.entries {
+            entry.validate_uri()?;
+        }
+        Ok(())
+    }
+}
+
+impl SourceEntry {
+    /// Whether this entry's [`uri`](SourceEntry::uri) is syntactically valid.
+    pub fn is_valid_uri(&self) -> bool {
+        self.validate_uri().is_ok()
+    }
+
+    /// Validate this entry's URI, returning an error describing the problem.
+    pub fn validate_uri(&self) -> Result<(), SourcesError> {
+        let uri = self.uri.trim();
+        if uri.is_empty() {
+            return Err(SourcesError::Parse("empty URI".to_string()));
+        }
+        if uri.split_whitespace().count() != 1 {
+            return Err(SourcesError::Parse(format!(
+                "URI contains whitespace: {:?}",
+                uri
+            )));
+        }
+        let Some((scheme, rest)) = uri.split_once("://") else {
+            return Err(SourcesError::Parse(format!(
+                "URI missing scheme separator '://': {:?}",
+                uri
+            )));
+        };
+        if scheme.is_empty() {
+            return Err(SourcesError::Parse(format!(
+                "empty URI scheme in {:?}",
+                uri
+            )));
+        }
+        let valid_scheme = matches!(
+            scheme,
+            "http" | "https" | "ftp" | "file" | "mirror+http" | "mirror+https" | "cdrom"
+        ) && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '-');
+        if !valid_scheme {
+            return Err(SourcesError::Parse(format!(
+                "unsupported URI scheme: {:?}",
+                scheme
+            )));
+        }
+        if rest.is_empty() {
+            return Err(SourcesError::Parse(format!(
+                "empty URI authority in {:?}",
+                uri
+            )));
+        }
+        Ok(())
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -573,5 +713,80 @@ Enabled: no
             e.release_url(),
             "http://archive.ubuntu.com/ubuntu/dists/focal/InRelease"
         );
+    }
+
+    #[test]
+    fn uri_validation_accepts_valid_schemes() {
+        let e = SourceEntry {
+            source_type: SourceType::Binary,
+            uri: "https://archive.ubuntu.com/ubuntu".to_string(),
+            suite: "focal".to_string(),
+            components: vec!["main".to_string()],
+            options: HashMap::new(),
+            enabled: true,
+        };
+        assert!(e.is_valid_uri());
+        assert!(
+            SourcesList::parse_one_line("deb https://example.com focal main")
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn uri_validation_rejects_bad_uris() {
+        for bad in ["not a uri", "ftp://", "://nohost", "weird://x", ""] {
+            let sl = SourcesList::parse_one_line(&format!("deb {} focal main", bad));
+            // Parse may succeed but validation must fail (empty/whitespace URIs
+            // error at parse time; the rest fail validation).
+            let result = match &sl {
+                Ok(s) => s.validate(),
+                Err(_) => continue,
+            };
+            assert!(result.is_err(), "expected {:?} to be invalid", bad);
+        }
+    }
+
+    #[test]
+    fn write_deb822_round_trip() {
+        let input = "deb http://archive.ubuntu.com/ubuntu focal main restricted\n\
+                     deb-src http://archive.ubuntu.com/ubuntu focal main\n";
+        let sl = SourcesList::parse_one_line(input).unwrap();
+        let deb822 = sl.write_deb822();
+        let sl2 = SourcesList::parse_deb822(&deb822).unwrap();
+        assert_eq!(sl2.entries.len(), 2);
+        assert!(sl2
+            .entries
+            .iter()
+            .any(|e| e.source_type == SourceType::Binary));
+        assert!(sl2
+            .entries
+            .iter()
+            .any(|e| e.source_type == SourceType::Source));
+    }
+
+    #[test]
+    fn write_to_file_round_trips_one_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sources.list");
+        let input = "deb http://archive.ubuntu.com/ubuntu focal main\n";
+        let sl = SourcesList::parse_one_line(input).unwrap();
+        sl.write(&path).unwrap();
+        let reloaded = SourcesList::load_file(&path).unwrap();
+        assert_eq!(reloaded.entries.len(), 1);
+        assert_eq!(reloaded.entries[0].suite, "focal");
+    }
+
+    #[test]
+    fn write_to_file_round_trips_deb822() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ubuntu.sources");
+        let sl = SourcesList::parse_one_line("deb http://archive.ubuntu.com/ubuntu focal main\n")
+            .unwrap();
+        sl.write(&path).unwrap();
+        let reloaded = SourcesList::load_file(&path).unwrap();
+        assert_eq!(reloaded.entries.len(), 1);
+        assert_eq!(reloaded.entries[0].uri, "http://archive.ubuntu.com/ubuntu");
     }
 }

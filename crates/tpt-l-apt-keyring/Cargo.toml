@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 description = "OpenPGP keyring management and Release file verification for APT"
 keywords = ["apt", "gpg", "pgp", "debian", "security"]
 categories = ["cryptography", "authentication"]
@@ -14,3 +16,8 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 pgp = { workspace = true }
 hex = { workspace = true }
+
+[dev-dependencies]
+rand = "0.8"
+chrono = "0.4"
+smallvec = "1"

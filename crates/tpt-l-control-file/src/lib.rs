@@ -28,6 +28,8 @@ pub enum ControlError {
     MissingField(String),
     #[error("invalid field value for {field}: {reason}")]
     InvalidField { field: String, reason: String },
+    #[error("duplicate field in stanza: {0}")]
+    DuplicateField(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -90,26 +92,57 @@ impl ControlParagraph {
 /// Parse all stanzas from a Debian control file string.
 ///
 /// Stanzas are separated by blank lines. Continuation lines (starting with
-/// whitespace) are folded into the previous field value.
+/// whitespace) are folded into the previous field value. Duplicate fields are
+/// accepted (the last occurrence wins); use [`parse_control_strict`] to reject
+/// them.
 pub fn parse_control(input: &str) -> Vec<ControlParagraph> {
-    let mut paragraphs: Vec<ControlParagraph> = Vec::new();
-    let mut current = ControlParagraph::new();
+    split_stanzas(input)
+        .into_iter()
+        .map(|s| parse_paragraph(s, false).unwrap_or_default())
+        .collect()
+}
+
+/// Parse all stanzas from a Debian control file string, rejecting any stanza
+/// that repeats a field name.
+///
+/// Debian policy forbids duplicate fields within a single stanza; this variant
+/// returns [`ControlError::DuplicateField`] for the offending stanza instead of
+/// silently keeping the last value.
+pub fn parse_control_strict(input: &str) -> Vec<Result<ControlParagraph, ControlError>> {
+    split_stanzas(input)
+        .into_iter()
+        .map(|s| parse_paragraph(s, true))
+        .collect()
+}
+
+/// Split a control document into its non-empty stanzas (blank-line separated).
+fn split_stanzas(input: &str) -> Vec<&str> {
+    input
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Parse a single stanza. When `strict` is true, a repeated field name is an
+/// error.
+fn parse_paragraph(stanza: &str, strict: bool) -> Result<ControlParagraph, ControlError> {
+    let mut para = ControlParagraph::new();
     let mut current_key: Option<String> = None;
 
-    for line in input.lines() {
+    for line in stanza.lines() {
         if line.is_empty() {
-            if !current.is_empty() {
-                paragraphs.push(std::mem::take(&mut current));
-                current_key = None;
-            }
             continue;
         }
 
         if line.starts_with(' ') || line.starts_with('\t') {
             if let Some(ref key) = current_key {
-                let val = current.fields.get_mut(key).unwrap();
-                val.push('\n');
-                val.push_str(line.trim_start());
+                if let Some(val) = para.fields.get_mut(key) {
+                    val.push('\n');
+                    // Debian folds long fields by prefixing the continuation with a
+                    // single space (or tab); strip exactly that one folding marker.
+                    val.push_str(&line[1..]);
+                }
             }
             continue;
         }
@@ -117,22 +150,53 @@ pub fn parse_control(input: &str) -> Vec<ControlParagraph> {
         if let Some(colon) = line.find(':') {
             let key = line[..colon].trim().to_string();
             let value = line[colon + 1..].trim().to_string();
+            if strict && para.fields.contains_key(&key) {
+                return Err(ControlError::DuplicateField(key));
+            }
             current_key = Some(key.clone());
-            current.set(&key, &value);
+            para.set(&key, &value);
         }
     }
 
-    if !current.is_empty() {
-        paragraphs.push(current);
-    }
-
-    paragraphs
+    Ok(para)
 }
 
 /// Parse a Debian control file from a filesystem path.
 pub fn parse_control_file(path: &Path) -> Result<Vec<ControlParagraph>, ControlError> {
     let content = std::fs::read_to_string(path)?;
     Ok(parse_control(&content))
+}
+
+/// Build a typed [`BinaryPackage`] from an already-parsed paragraph.
+fn build_binary(p: &ControlParagraph) -> Result<BinaryPackage, ControlError> {
+    let require = |key: &str| -> Result<String, ControlError> {
+        p.get(key)
+            .map(|v| v.to_string())
+            .ok_or_else(|| ControlError::MissingField(key.to_string()))
+    };
+    Ok(BinaryPackage {
+        name: require("Package")?,
+        version_str: require("Version")?,
+        architecture: p.get("Architecture").unwrap_or("all").to_string(),
+        description: p
+            .get("Description")
+            .unwrap_or("")
+            .lines()
+            .next()
+            .unwrap_or("")
+            .to_string(),
+        depends: p.get("Depends").map(str::to_string),
+        pre_depends: p.get("Pre-Depends").map(str::to_string),
+        conflicts: p.get("Conflicts").map(str::to_string),
+        breaks: p.get("Breaks").map(str::to_string),
+        provides: p.get("Provides").map(str::to_string),
+        recommends: p.get("Recommends").map(str::to_string),
+        suggests: p.get("Suggests").map(str::to_string),
+        installed_size: p.get("Installed-Size").and_then(|v| v.parse().ok()),
+        filename: p.get("Filename").map(str::to_string),
+        sha256: p.get("SHA256").map(str::to_string),
+        size: p.get("Size").and_then(|v| v.parse().ok()),
+    })
 }
 
 // ─── Typed binary-package stanza ─────────────────────────────────────────────
@@ -158,6 +222,10 @@ pub struct BinaryPackage {
     pub breaks: Option<String>,
     /// Raw `Provides:` field value (unparsed).
     pub provides: Option<String>,
+    /// Raw `Recommends:` field value (unparsed).
+    pub recommends: Option<String>,
+    /// Raw `Suggests:` field value (unparsed).
+    pub suggests: Option<String>,
     /// Installed size in KiB (`Installed-Size:` field).
     pub installed_size: Option<u64>,
     /// Download filename relative to pool root.
@@ -173,6 +241,51 @@ impl BinaryPackage {
     ///
     /// Stanzas are separated by blank lines; pass one stanza at a time.
     pub fn parse_stanza(stanza: &str) -> Result<Self, ControlError> {
+        let p = parse_paragraph(stanza, false).unwrap_or_default();
+        build_binary(&p)
+    }
+
+    /// Parse a single control stanza from text, rejecting duplicate fields.
+    ///
+    /// See [`parse_control_strict`] for the rationale.
+    pub fn parse_stanza_strict(stanza: &str) -> Result<Self, ControlError> {
+        let p = parse_paragraph(stanza, true)?;
+        build_binary(&p)
+    }
+
+    /// Parse all stanzas from a `Packages` index file.
+    pub fn parse_packages_index(data: &str) -> Vec<Result<Self, ControlError>> {
+        data.split("\n\n")
+            .filter(|s| !s.trim().is_empty())
+            .map(Self::parse_stanza)
+            .collect()
+    }
+}
+
+/// A parsed source package stanza from a `Sources` index or `.dsc`-derived data.
+#[derive(Debug, Clone)]
+pub struct SourcePackage {
+    /// Source package name (`Package`/`Source:` field).
+    pub name: String,
+    /// Version string (`Version:` field).
+    pub version_str: String,
+    /// Maintainer (`Maintainer:` field).
+    pub maintainer: String,
+    /// Architectures the source builds for (`Architecture:` list).
+    pub architecture: Vec<String>,
+    /// Raw `Build-Depends:` field value (unparsed).
+    pub build_depends: Option<String>,
+    /// Raw `Build-Depends-Indep:` field value (unparsed).
+    pub build_depends_indep: Option<String>,
+    /// `Directory:` in the pool where the source lives.
+    pub directory: Option<String>,
+    /// `Files:` stanza (md5/sha256 + size + filename).
+    pub files: Option<String>,
+}
+
+impl SourcePackage {
+    /// Parse a single source-package stanza from text.
+    pub fn parse_stanza(stanza: &str) -> Result<Self, ControlError> {
         let paragraphs = parse_control(stanza);
         let p = paragraphs.into_iter().next().unwrap_or_default();
 
@@ -183,34 +296,72 @@ impl BinaryPackage {
         };
 
         Ok(Self {
-            name: require("Package")?,
+            name: require("Package").or_else(|_| require("Source"))?,
             version_str: require("Version")?,
-            architecture: p.get("Architecture").unwrap_or("all").to_string(),
-            description: p
-                .get("Description")
-                .unwrap_or("")
-                .lines()
-                .next()
-                .unwrap_or("")
-                .to_string(),
-            depends: p.get("Depends").map(str::to_string),
-            pre_depends: p.get("Pre-Depends").map(str::to_string),
-            conflicts: p.get("Conflicts").map(str::to_string),
-            breaks: p.get("Breaks").map(str::to_string),
-            provides: p.get("Provides").map(str::to_string),
-            installed_size: p.get("Installed-Size").and_then(|v| v.parse().ok()),
-            filename: p.get("Filename").map(str::to_string),
-            sha256: p.get("SHA256").map(str::to_string),
-            size: p.get("Size").and_then(|v| v.parse().ok()),
+            maintainer: p.get("Maintainer").unwrap_or("").to_string(),
+            architecture: p
+                .get("Architecture")
+                .map(|s| s.split_whitespace().map(str::to_string).collect())
+                .unwrap_or_default(),
+            build_depends: p.get("Build-Depends").map(str::to_string),
+            build_depends_indep: p.get("Build-Depends-Indep").map(str::to_string),
+            directory: p.get("Directory").map(str::to_string),
+            files: p.get("Files").map(str::to_string),
         })
     }
+}
 
-    /// Parse all stanzas from a `Packages` index file.
-    pub fn parse_packages_index(data: &str) -> Vec<Result<Self, ControlError>> {
-        data.split("\n\n")
-            .filter(|s| !s.trim().is_empty())
-            .map(Self::parse_stanza)
-            .collect()
+/// A lazily-parsed view over a `Packages` index.
+///
+/// Stanzas are split on blank lines and parsed on demand, so callers can
+/// iterate very large indices without materialising every [`BinaryPackage`]
+/// up front.
+#[derive(Debug, Clone, Copy)]
+pub struct PackagesIndex<'a> {
+    text: &'a str,
+}
+
+impl<'a> PackagesIndex<'a> {
+    /// Wrap a `Packages` index document.
+    pub fn new(text: &'a str) -> Self {
+        Self { text }
+    }
+
+    /// Iterate over every stanza, producing a [`BinaryPackage`] or the parse
+    /// error for that stanza.
+    pub fn iter_results(&self) -> impl Iterator<Item = Result<BinaryPackage, ControlError>> + 'a {
+        self.text
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(BinaryPackage::parse_stanza)
+    }
+
+    /// Iterate over only the successfully-parsed packages.
+    pub fn iter(&self) -> impl Iterator<Item = BinaryPackage> + 'a {
+        self.iter_results().filter_map(Result::ok)
+    }
+
+    /// Iterate every stanza, parsing strictly (duplicate fields rejected) and
+    /// producing a [`BinaryPackage`] or the parse error for that stanza.
+    pub fn iter_results_strict(
+        &self,
+    ) -> impl Iterator<Item = Result<BinaryPackage, ControlError>> + 'a {
+        self.text
+            .split("\n\n")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(BinaryPackage::parse_stanza_strict)
+    }
+
+    /// Count of stanzas that parse successfully as packages.
+    pub fn len(&self) -> usize {
+        self.iter().count()
+    }
+
+    /// `true` when the index contains no packages.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -262,5 +413,103 @@ Provides: libfoo-abi1
         p.set("Package", "hello");
         assert_eq!(p.get("package"), Some("hello"));
         assert_eq!(p.get("PACKAGE"), Some("hello"));
+    }
+
+    #[test]
+    fn folded_description_joined_with_newlines() {
+        let stanza = "\
+Package: foo
+Version: 1.0
+Description: short synopsis
+ this is a continuation line
+  and another with leading spaces preserved
+";
+        let pkg = BinaryPackage::parse_stanza(stanza).unwrap();
+        assert_eq!(pkg.description, "short synopsis");
+        let desc = parse_control(stanza)
+            .into_iter()
+            .next()
+            .unwrap()
+            .get("Description")
+            .unwrap()
+            .to_string();
+        assert!(desc.starts_with("short synopsis"));
+        assert!(desc.contains("this is a continuation line"));
+        assert!(desc.contains(" and another with leading spaces preserved"));
+    }
+
+    #[test]
+    fn source_package_parse() {
+        let stanza = "\
+Package: glibc
+Version: 2.38-1
+Maintainer: Nobody <nobody@example.com>
+Architecture: all amd64
+Build-Depends: libc6-dev (>= 2.0), gcc
+Directory: pool/main/g/glibc
+";
+        let src = SourcePackage::parse_stanza(stanza).unwrap();
+        assert_eq!(src.name, "glibc");
+        assert_eq!(src.version_str, "2.38-1");
+        assert_eq!(
+            src.architecture,
+            vec!["all".to_string(), "amd64".to_string()]
+        );
+        assert!(src.build_depends.is_some());
+        assert_eq!(src.directory.as_deref(), Some("pool/main/g/glibc"));
+    }
+
+    #[test]
+    fn packages_index_streams_entries() {
+        let index = "\
+Package: a
+Version: 1.0
+
+Package: b
+Version: 2.0
+
+Package: c
+Version: 3.0
+";
+        let idx = PackagesIndex::new(index);
+        assert_eq!(idx.len(), 3);
+        let names: Vec<_> = idx.iter().map(|p| p.name).collect();
+        assert_eq!(
+            names,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn strict_parse_rejects_duplicate_fields() {
+        let input = "Package: a\nVersion: 1.0\nPackage: b\n";
+        let paras = parse_control_strict(input);
+        assert_eq!(paras.len(), 1);
+        assert!(matches!(paras[0], Err(ControlError::DuplicateField(_))));
+    }
+
+    #[test]
+    fn strict_parse_accepts_unique_fields() {
+        let input = "Package: a\nVersion: 1.0\n\nPackage: b\nVersion: 2.0\n";
+        let paras = parse_control_strict(input);
+        assert!(paras.iter().all(|p| p.is_ok()));
+    }
+
+    #[test]
+    fn binary_stanza_strict_rejects_dupes() {
+        let stanza = "Package: a\nVersion: 1.0\nPackage: b\n";
+        assert!(matches!(
+            BinaryPackage::parse_stanza_strict(stanza),
+            Err(ControlError::DuplicateField(_))
+        ));
+    }
+
+    #[test]
+    fn packages_index_strict_iter() {
+        let index = "Package: a\nVersion: 1.0\nPackage: a2\nVersion: 1.0\n";
+        let idx = PackagesIndex::new(index);
+        let results: Vec<_> = idx.iter_results_strict().collect();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_err());
     }
 }

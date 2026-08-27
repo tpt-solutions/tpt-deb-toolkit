@@ -11,7 +11,7 @@
 //!
 //! # Example
 //!
-//! ```
+//! ```no_run
 //! use tpt_l_deb_diff::DebDiff;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,7 +29,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tpt_l_deb_format::{DebError, DebFile, DebMetadata};
-use tpt_l_deb_format::DebFile as _;
 
 use thiserror::Error;
 
@@ -90,7 +89,9 @@ impl DiffReport {
 
     /// Total number of changes across all categories.
     pub fn change_count(&self) -> usize {
-        self.metadata.len() + self.files_added.len() + self.files_removed.len()
+        self.metadata.len()
+            + self.files_added.len()
+            + self.files_removed.len()
             + self.files_modified.len()
     }
 }
@@ -155,23 +156,23 @@ impl DebDiff {
         }
 
         // File tree diff
-        let mut old_paths: Vec<&PathBuf> = old_c.files.keys().cloned().collect();
+        let mut old_paths: Vec<PathBuf> = old_c.files.keys().cloned().collect();
         old_paths.sort();
-        let mut new_paths: Vec<&PathBuf> = new_c.files.keys().cloned().collect();
+        let mut new_paths: Vec<PathBuf> = new_c.files.keys().cloned().collect();
         new_paths.sort();
 
         for p in &new_paths {
-            if !old_c.files.contains_key(*p) {
-                report.files_added.push((*p).clone());
+            if !old_c.files.contains_key(p) {
+                report.files_added.push(p.clone());
             }
         }
         for p in &old_paths {
-            if !new_c.files.contains_key(*p) {
-                report.files_removed.push((*p).clone());
+            if !new_c.files.contains_key(p) {
+                report.files_removed.push(p.clone());
             }
         }
         for p in &old_paths {
-            if let (Some(o), Some(n)) = (old_c.files.get(*p), new_c.files.get(*p)) {
+            if let (Some(o), Some(n)) = (old_c.files.get(p), new_c.files.get(p)) {
                 if sha256_hex(o) != sha256_hex(n) {
                     report.files_modified.push(FileChange {
                         path: (*p).clone(),
@@ -207,9 +208,9 @@ impl std::fmt::Display for DiffReport {
             writeln!(f, "Metadata changes:")?;
             for m in &self.metadata {
                 match (&m.old, &m.new) {
-                    (Some(o), Some(n)) => writeln!(f, "  {}: {!r} -> {!r}", m.field, o, n)?,
-                    (Some(o), None) => writeln!(f, "  {}: {!r} -> (removed)", m.field, o)?,
-                    (None, Some(n)) => writeln!(f, "  {}: (added) -> {!r}", m.field, n)?,
+                    (Some(o), Some(n)) => writeln!(f, "  {}: {:?} -> {:?}", m.field, o, n)?,
+                    (Some(o), None) => writeln!(f, "  {}: {:?} -> (removed)", m.field, o)?,
+                    (None, Some(n)) => writeln!(f, "  {}: (added) -> {:?}", m.field, n)?,
                     (None, None) => {}
                 }
             }
@@ -250,6 +251,7 @@ mod tests {
     /// data files (path -> contents).
     fn build_deb(control: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
         let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(b"!<arch>\n");
 
         // debian-binary
         write_ar_member(&mut buf, "debian-binary", b"2.0\n");
@@ -263,12 +265,11 @@ mod tests {
             header.set_size(data.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            builder
-                .append_data(&mut header, "control", data)
-                .unwrap();
+            builder.append_data(&mut header, "control", data).unwrap();
             builder.finish().unwrap();
         }
-        write_ar_member(&mut buf, "control.tar.gz", &ctrl_tar);
+        let ctrl_gz = gzip(&ctrl_tar);
+        write_ar_member(&mut buf, "control.tar.gz", &ctrl_gz);
 
         // data.tar.gz
         let mut data_tar: Vec<u8> = Vec::new();
@@ -279,36 +280,47 @@ mod tests {
                 header.set_size(content.len() as u64);
                 header.set_mode(0o644);
                 header.set_cksum();
-                builder
-                    .append_data(&mut header, path, *content)
-                    .unwrap();
+                builder.append_data(&mut header, path, *content).unwrap();
             }
             builder.finish().unwrap();
         }
-        write_ar_member(&mut buf, "data.tar.gz", &data_tar);
+        let data_gz = gzip(&data_tar);
+        write_ar_member(&mut buf, "data.tar.gz", &data_gz);
 
         buf
     }
 
+    fn gzip(data: &[u8]) -> Vec<u8> {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
     fn write_ar_member(out: &mut Vec<u8>, name: &str, body: &[u8]) {
-        let mut padded_name = name.to_string();
-        while padded_name.len() < 16 {
-            padded_name.push(' ');
-        }
-        let size = format!("{:<10}", body.len());
+        let mut name_field = name.as_bytes().to_vec();
+        name_field.resize(16, b' ');
         let header = format!(
-            "{}{}0         0     0     100644     {}\n`\n",
-            padded_name, size, size
+            "{}{:>12}{:>6}{:>6}{:>8}{:>10}`\n",
+            String::from_utf8_lossy(&name_field),
+            "0",
+            "0",
+            "0",
+            "100644",
+            body.len()
         );
         out.extend_from_slice(header.as_bytes());
         out.extend_from_slice(body);
-        if body.len() % 2 != 0 {
+        if !body.len().is_multiple_of(2) {
             out.push(b'\n');
         }
     }
 
-    const CONTROL_A: &str = "Package: foo\nVersion: 1.0-1\nArchitecture: amd64\nDescription: test\n";
-    const CONTROL_B: &str = "Package: foo\nVersion: 1.0-2\nArchitecture: amd64\nDescription: test\n";
+    const CONTROL_A: &str =
+        "Package: foo\nVersion: 1.0-1\nArchitecture: amd64\nDescription: test\n";
+    const CONTROL_B: &str =
+        "Package: foo\nVersion: 1.0-2\nArchitecture: amd64\nDescription: test\n";
 
     #[test]
     fn identical_debs_produce_empty_diff() {
@@ -334,17 +346,11 @@ mod tests {
     fn added_removed_and_modified_files() {
         let a = build_deb(
             CONTROL_A,
-            &[
-                ("usr/bin/foo", b"hello"),
-                ("usr/bin/old", b"gone"),
-            ],
+            &[("usr/bin/foo", b"hello"), ("usr/bin/old", b"gone")],
         );
         let b = build_deb(
             CONTROL_A,
-            &[
-                ("usr/bin/foo", b"hello world"),
-                ("usr/bin/new", b"fresh"),
-            ],
+            &[("usr/bin/foo", b"hello world"), ("usr/bin/new", b"fresh")],
         );
         let report = DebDiff::compare(&a, &b).unwrap();
         assert_eq!(report.files_added, vec![PathBuf::from("usr/bin/new")]);

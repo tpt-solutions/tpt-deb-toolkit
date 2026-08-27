@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 description = "Async HTTP transport for APT: index fetching, mirror failover, partial downloads"
 keywords = ["apt", "http", "download", "debian", "async"]
 categories = ["network-programming", "asynchronous"]
@@ -12,6 +14,7 @@ categories = ["network-programming", "asynchronous"]
 [dependencies]
 tokio = { workspace = true }
 reqwest = { workspace = true }
+futures-util = "0.3"
 flate2 = { workspace = true }
 xz2 = { workspace = true }
 zstd = { workspace = true }

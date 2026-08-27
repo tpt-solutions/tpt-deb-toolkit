@@ -41,6 +41,9 @@ pub enum DbError {
     /// Writing the temporary file failed.
     #[error("atomic write failed: {0}")]
     Persist(String),
+    /// The status file was not valid UTF-8.
+    #[error("status file is not valid UTF-8: {0}")]
+    Utf8(String),
 }
 
 // ── PackageWant ───────────────────────────────────────────────────────────────
@@ -295,10 +298,17 @@ impl StatusDb {
 
     /// Open and parse the dpkg status file at `path`.
     ///
-    /// Pass `/var/lib/dpkg/status` for the system database.
+    /// Pass `/var/lib/dpkg/status` for the system database. The file is
+    /// memory-mapped (via `memmap2`) so even very large status databases are
+    /// not copied into a Rust `String` up front; the parse reads through the
+    /// mapping.
     pub fn open(path: &Path) -> Result<Self, DbError> {
-        let content = std::fs::read_to_string(path)?;
-        Self::parse_str(&content)
+        let file = std::fs::File::open(path)?;
+        // SAFETY: we only read the mapping; the underlying file is not mutated
+        // by this process, so the mapping's visibility is stable for its life.
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        let content = std::str::from_utf8(&mmap).map_err(|e| DbError::Utf8(e.to_string()))?;
+        Self::parse_str(content)
     }
 
     /// Parse a status database from a string.
@@ -401,6 +411,120 @@ impl StatusDb {
             .persist(path)
             .map_err(|e| DbError::Persist(e.to_string()))?;
         Ok(())
+    }
+
+    /// Apply a set of changes in place, then write the whole database back
+    /// atomically via [`StatusDb::write_atomic`].
+    ///
+    /// Each change either upserts a package's status (matched by name) or
+    /// removes a package entirely. This is the "changes diff" half of the
+    /// atomic writer: callers compute a small diff and persist it without
+    /// manually mutating every record.
+    pub fn apply_changes(&mut self, changes: &[StatusChange]) -> Result<(), DbError> {
+        for change in changes {
+            match change {
+                StatusChange::SetStatus {
+                    name,
+                    version,
+                    architecture,
+                    status,
+                } => {
+                    if let Some(p) = self.packages.iter_mut().find(|p| &p.name == name) {
+                        p.version = version.clone();
+                        p.architecture = architecture.clone();
+                        p.status = status.clone();
+                    } else {
+                        self.packages.push(InstalledPackage {
+                            name: name.clone(),
+                            version: version.clone(),
+                            architecture: architecture.clone(),
+                            status: status.clone(),
+                            depends: None,
+                            pre_depends: None,
+                            description: None,
+                        });
+                    }
+                }
+                StatusChange::Remove { name } => {
+                    self.packages.retain(|p| &p.name != name);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// ── StatusChange ─────────────────────────────────────────────────────────────
+
+/// A single mutation to apply to a [`StatusDb`] before persisting it.
+///
+/// Changes are applied by [`StatusDb::apply_changes`] and then written back
+/// atomically; this is the "diff" half of the write path.
+#[derive(Debug, Clone)]
+pub enum StatusChange {
+    /// Upsert the status of the named package. If no record exists it is
+    /// created (with `Depends`/`Pre-Depends`/`Description` left empty for the
+    /// caller to populate if needed).
+    SetStatus {
+        /// Package name.
+        name: String,
+        /// New version string.
+        version: String,
+        /// New architecture string.
+        architecture: String,
+        /// New parsed status.
+        status: PackageStatus,
+    },
+    /// Remove the named package record entirely.
+    Remove {
+        /// Package name.
+        name: String,
+    },
+}
+
+// ── ConcurrentStatusDb ───────────────────────────────────────────────────────
+
+/// A [`StatusDb`] guarded by a read/write lock for safe concurrent access.
+///
+/// Many threads may call [`ConcurrentStatusDb::read`] simultaneously; writers
+/// (via [`ConcurrentStatusDb::apply_changes`]) take the exclusive lock and
+/// block readers for the duration of the mutation. The underlying lock is
+/// `std::sync::RwLock`, so reads never block each other and writers are
+/// serialised.
+pub struct ConcurrentStatusDb {
+    inner: std::sync::RwLock<StatusDb>,
+}
+
+impl ConcurrentStatusDb {
+    /// Open a status database and wrap it for concurrent access.
+    pub fn open(path: &Path) -> Result<Self, DbError> {
+        Ok(Self {
+            inner: std::sync::RwLock::new(StatusDb::open(path)?),
+        })
+    }
+
+    /// Acquire a shared read lock and return a guard that derefs to the
+    /// underlying [`StatusDb`].
+    ///
+    /// The guard borrows `self`, so the lock is held for as long as the guard
+    /// is alive.
+    pub fn read(&self) -> std::sync::RwLockReadGuard<'_, StatusDb> {
+        self.inner
+            .read()
+            .expect("StatusDb lock poisoned by a panicking writer")
+    }
+
+    /// Acquire the exclusive write lock, apply `changes`, and persist the
+    /// updated database atomically to `path`.
+    pub fn apply_changes(&self, path: &Path, changes: &[StatusChange]) -> Result<(), DbError> {
+        {
+            let mut db = self
+                .inner
+                .write()
+                .expect("StatusDb lock poisoned by a panicking writer");
+            db.apply_changes(changes)?;
+        }
+        self.read().write_atomic(path)
     }
 }
 
@@ -534,5 +658,89 @@ Description: a removed package
             db2.find("bash").unwrap().version,
             db.find("bash").unwrap().version
         );
+    }
+
+    #[test]
+    fn apply_changes_upserts_and_removes() {
+        let mut db = StatusDb::parse_str(SAMPLE).unwrap();
+        let before = db.packages().len();
+        db.apply_changes(&[
+            StatusChange::SetStatus {
+                name: "bash".to_string(),
+                version: "5.2-1".to_string(),
+                architecture: "amd64".to_string(),
+                status: PackageStatus::parse("install ok installed").unwrap(),
+            },
+            StatusChange::SetStatus {
+                name: "newpkg".to_string(),
+                version: "0.1".to_string(),
+                architecture: "amd64".to_string(),
+                status: PackageStatus::parse("install ok installed").unwrap(),
+            },
+            StatusChange::Remove {
+                name: "removed-pkg".to_string(),
+            },
+        ])
+        .unwrap();
+        assert_eq!(db.find("bash").unwrap().version, "5.2-1");
+        assert!(db.find("newpkg").is_some());
+        assert!(db.find("removed-pkg").is_none());
+        // bash upsert replaces in place, newpkg is added, removed-pkg drops:
+        // the total count is unchanged.
+        assert_eq!(db.packages().len(), before);
+    }
+
+    #[test]
+    fn concurrent_reads_and_write_dont_deadlock() {
+        use std::sync::Arc;
+
+        let db = StatusDb::parse_str(SAMPLE).unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let out = tmp_dir.path().join("status");
+        db.write_atomic(&out).unwrap();
+
+        let cdb = Arc::new(ConcurrentStatusDb::open(&out).unwrap());
+
+        // Spawn several reader threads that hold the read lock briefly.
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let cdb = Arc::clone(&cdb);
+                std::thread::spawn(move || {
+                    for _ in 0..50 {
+                        let guard = cdb.read();
+                        let _ = guard.installed_packages().count();
+                    }
+                })
+            })
+            .collect();
+
+        // Concurrently, a writer applies a change and persists atomically.
+        let writer = {
+            let cdb = Arc::clone(&cdb);
+            let out = out.clone();
+            std::thread::spawn(move || {
+                for i in 0..20 {
+                    cdb.apply_changes(
+                        &out,
+                        &[StatusChange::SetStatus {
+                            name: format!("dyn-{i}"),
+                            version: "1.0".to_string(),
+                            architecture: "amd64".to_string(),
+                            status: PackageStatus::parse("install ok installed").unwrap(),
+                        }],
+                    )
+                    .unwrap();
+                }
+            })
+        };
+
+        for r in readers {
+            r.join().unwrap();
+        }
+        writer.join().unwrap();
+
+        // Final state is consistent and readable.
+        let guard = cdb.read();
+        assert!(guard.find("dyn-19").is_some());
     }
 }

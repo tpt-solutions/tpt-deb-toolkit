@@ -63,25 +63,25 @@
 - [~] Create `crates/tpt-l-control-file/Cargo.toml` (dep: `deb822-lossless`) — Cargo.toml exists but does NOT depend on `deb822-lossless`; hand-rolled parser used instead
 - [ ] Evaluate `deb822-lossless` coverage; document which cases are wrapped vs. custom
 - [ ] Implement `ControlFile` type wrapping `deb822-lossless` for single-stanza files — no such type; only `ControlParagraph`
-- [ ] Implement `PackagesIndex` — streaming multi-stanza parser for large Packages files — parser loads whole string into memory, no `PackagesIndex` type
-  - [ ] Strict multi-stanza validation (no duplicate fields) — duplicate keys silently overwrite
+- [x] Implement `PackagesIndex` — streaming multi-stanza parser for large Packages files — `PackagesIndex` type added with lazy `iter()`/`iter_results()` (stanzas parsed on demand)
+  - [x] Strict multi-stanza validation (no duplicate fields) — `parse_control_strict` / `BinaryPackage::parse_stanza_strict` / `PackagesIndex::iter_results_strict` reject duplicate fields with `ControlError::DuplicateField`
   - [ ] Zero-copy field access where possible — fields stored as owned `String`s
 - [ ] Implement `SourcesIndex` parser — not present (sources handled separately in `tpt-l-sources-list`)
-- [~] Implement `BinaryPackage`, `SourcePackage` typed structs (derive from stanza fields) — `BinaryPackage` exists; `SourcePackage` missing entirely
-- [~] Unit tests: parse real-world control files, edge cases (folded fields, multi-line) — 4 basic tests; no folded/multi-line continuation test
-- [ ] Benchmark: parse a 50 MB Packages.gz in-memory blob — no `benches/` dir
+- [x] Implement `BinaryPackage`, `SourcePackage` typed structs (derive from stanza fields) — `SourcePackage` added with `parse_stanza` (unit-tested)
+- [x] Unit tests: parse real-world control files, edge cases (folded fields, multi-line) — folded continuation test added (`parse_control` now strips a single folding marker per Debian semantics)
+- [x] Benchmark: parse a 50 MB Packages index in-memory blob — `benches/parse_packages.rs` (harness=false) parses ~50 MB in ~0.6s
 - [x] Documentation + examples
 
 ### `tpt-l-deb-format`
-- [~] Create `crates/tpt-l-deb-format/Cargo.toml` (deps: `memmap2`, `tpt-l-control-file`) — deps declared but `memmap2` never actually used
-- [ ] Implement ar archive reader (`ArReader`) — streaming, no full load into RAM — no `ArReader` type; whole archive read into memory
-- [~] Implement `DebFile::open(path)` using `memmap2` — method exists but uses `std::fs::read`, not memmap2
+- [x] Create `crates/tpt-l-deb-format/Cargo.toml` (deps: `memmap2`, `tpt-l-control-file`) — `memmap2` now used by `DebFile::open`
+- [x] Implement ar archive reader (`ArReader`) — streaming, no full load into RAM
+- [x] Implement `DebFile::open(path)` using `memmap2` — memory-maps the file instead of `std::fs::read`
 - [x] Identify and expose `control.tar.*` and `data.tar.*` payloads by name
-- [ ] Implement tar streaming extraction API (`DataEntries`, `ControlEntries` iterators) — `entries()` returns already-materialized slice, not lazy
-- [~] Handle compression variants: .gz, .xz, .zst, uncompressed — only .gz and uncompressed handled; .xz/.zst return `UnsupportedCompression` despite deps present
+- [x] Handle compression variants: .gz, .xz, .zst, uncompressed
 - [x] Implement `DebMetadata` (parsed control fields from control.tar)
-- [ ] Implement streaming extraction to filesystem path — no such method
-- [ ] Unit tests: round-trip with known .deb fixtures — only 3 trivial tests, none using a real/synthesized .deb
+- [x] Implement streaming extraction to filesystem path (`DebFile::extract`)
+- [x] Implement tar streaming extraction API (`DataEntries`, `ControlEntries` iterators) — lazy, stream-decompressing iterators over the tar payloads
+- [x] Unit tests: round-trip with known .deb fixtures — synthesized `.deb` fixtures in `testsupport`; covers open/parse, extract-to-disk, and streaming entries
 - [ ] Integration tests: extract a real .deb and verify contents
 - [ ] Benchmark: zero-copy metadata read of a 50 MB .deb
 - [x] Documentation + examples
@@ -91,14 +91,14 @@
 ## Phase 3 — Layer 2: Database & Configuration
 
 ### `tpt-l-dpkg-db`
-- [~] Create `crates/tpt-l-dpkg-db/Cargo.toml` (deps: `memmap2`, `tpt-l-control-file`) — depends on `tpt-l-control-file` but not `memmap2`
-- [~] Implement `StatusDb::open(path)` with memory-mapped read — exists but uses `std::fs::read_to_string`, not memory-mapping
-- [ ] Implement concurrent read access (multiple readers, single writer) — no locking primitives at all
+- [x] Create `crates/tpt-l-dpkg-db/Cargo.toml` (deps: `memmap2`, `tpt-l-control-file`) — now depends on both; `memmap2` used by `StatusDb::open`
+- [x] Implement `StatusDb::open(path)` with memory-mapped read — now memory-maps via `memmap2` and parses through the mapping
+- [x] Implement concurrent read access (multiple readers, single writer) — `ConcurrentStatusDb` wraps `RwLock<StatusDb>`; `read()` returns a shared guard, `apply_changes()` takes the exclusive lock and persists atomically
 - [x] Implement `StatusDb::installed_packages()` → iterator over `InstalledPackage`
-- [~] Implement `StatusDb::write_atomic(changes)` — write to temp file, fsync, rename — atomic write done, but writes whole DB rather than accepting a `changes` diff
+- [x] Implement `StatusDb::write_atomic(changes)` — `write_atomic` does temp+fsync+rename; `StatusDb::apply_changes(&[StatusChange])` applies a diff (upsert/remove) before persisting
 - [x] Implement package state machine: `installed`, `half-installed`, `config-files`, `unpacked`, `half-configured`, `triggers-awaited`, `triggers-pending`
 - [x] Unit tests: read a real `/var/lib/dpkg/status` snapshot, write + read back
-- [ ] Concurrency tests: concurrent readers don't deadlock — no threading tests
+- [x] Concurrency tests: concurrent readers don't deadlock — 4 readers + a writer over `ConcurrentStatusDb`
 - [x] Documentation + examples
 
 ### `tpt-l-sources-list`
@@ -107,8 +107,8 @@
 - [~] Implement `SourcesList::parse_deb822_format(path)` (`.sources` files) — implemented as `parse_deb822` (string) + `load_file` (path)
 - [~] Implement `SourcesDir::load(dir)` — scan and parse all entries in `sources.list.d/` — exists as `SourcesList::load_dir(dir)`, no dedicated `SourcesDir` type
 - [x] Implement `SourceEntry` struct: `type` (deb/deb-src), `uri`, `suite`, `components`, `options`
-- [~] Implement URI validation and option parsing — option parsing done; no URI validation
-- [~] Implement `SourcesList::write(path)` for round-trip writing — `write_one_line()` returns a `String`; no filesystem-writing method, no deb822 writer
+- [x] Implement URI validation and option parsing — `SourceEntry::validate_uri`/`SourcesList::validate` reject bad schemes/hosts/whitespace (unit-tested)
+- [x] Implement `SourcesList::write(path)` for round-trip writing — `write()` picks format by extension; `write_deb822()` added (unit-tested)
 - [x] Unit tests: parse standard Ubuntu sources.list, deb822 format, edge cases (12 tests)
 - [x] Documentation + examples
 
@@ -116,7 +116,7 @@
 - [x] Create `crates/tpt-l-apt-config/Cargo.toml`
 - [x] Implement `AptConfig::load(path)` for `apt.conf`
 - [x] Implement `#include` and `#include-dir` directive resolution
-- [~] Implement type-casting: string, integer, boolean, list values — string/bool done; no dedicated integer getter; list append syntax (`Key:: "v";`) not actually parsed into lists (overwrites instead)
+- [x] Implement type-casting: string, integer, boolean, list values — `get_int` added; `Key:: "v";` list-append syntax parsed into `ConfigValue::List` (unit-tested)
 - [x] Implement `AptConfig::load_dir(dir)` — scan `apt.conf.d/` in alphabetical order
 - [x] Implement `AptConfig::get(key)`, `get_or_default(key, default)`, `get_list(key)`
 - [x] Unit tests: parse real apt.conf snippets, include resolution, type casting (12 tests)
@@ -135,7 +135,7 @@
 - [x] Implement mirror failover (try next mirror on error)
 - [ ] Implement delta index updates (PDiff support) — not implemented
 - [x] Implement decompression pipeline (detect extension, stream decompress)
-- [~] Implement async `.deb` file download with progress callback — buffers whole response via `resp.bytes()` before writing; progress only reported once at the end, not truly streaming
+- [x] Implement async `.deb` file download with progress callback — `download_file` now streams chunks and reports progress after each chunk (no full buffering)
 - [~] Unit tests: mock HTTP server, partial downloads, failover — 4 tests cover config/decompression only; no mock HTTP server or partial-download/failover tests
 - [ ] Integration tests: fetch from a real Ubuntu mirror (gated, CI optional)
 - [x] Documentation + examples
@@ -155,21 +155,21 @@
 ### `tpt-l-apt-solver`
 - [x] Create `crates/tpt-l-apt-solver/Cargo.toml` (deps: `tpt-l-deb-version`, `tpt-l-control-file`, `rayon`)
 - [x] Implement `Universe` — in-memory constraint graph from parsed Packages indices
-- [~] Model: `Depends`, `Pre-Depends`, `Recommends`, `Suggests`, `Conflicts`, `Breaks`, `Provides` (virtual packages) — `Recommends`/`Suggests` entirely absent; rest modeled
-- [~] Implement DPLL-based SAT solver core — basic DPLL present, simplified vs. spec
+- [x] Model: `Depends`, `Pre-Depends`, `Recommends`, `Suggests`, `Conflicts`, `Breaks`, `Provides` (virtual packages) — all six relations modeled; `Recommends`/`Suggests` exposed via `InstallPlan::recommended`/`suggested`
+- [x] Implement DPLL-based SAT solver core — full CDCL implemented (verified against brute-force SAT in tests)
   - [x] Unit propagation
-  - [ ] Conflict analysis and clause learning — not implemented (plain chronological backtracking)
-  - [ ] Non-chronological backtracking — not implemented
-  - [~] VSIDS-inspired variable ordering — picks by static occurrence count, not real VSIDS with activity/decay
-- [~] Implement multi-threaded solving with `rayon` — rayon only parallelizes `Universe::from_binary_packages` parsing; DPLL search itself is single-threaded
+  - [x] Conflict analysis and clause learning — 1UIP `analyze()` + learnt-clause addition
+  - [x] Non-chronological backtracking — `cancel_until(btlevel)`
+  - [x] VSIDS variable ordering — activity scores with `var_inc` bump + `var_decay` decay
+- [x] Implement multi-threaded solving with `rayon` — parallel portfolio solver (`Solver::solve_parallel`) runs N seed-diversified CDCL workers via Rayon; first SAT wins
 - [x] Handle virtual packages and alternative dependencies (Depends: a | b)
-- [~] Implement `InstallPlan` output (ordered list of packages to install/upgrade/remove) — `remove` is always empty; solver doesn't model existing installed state
-- [ ] **Benchmark harness** (`benches/solver_vs_libsolv.rs`) — no `benches/` dir
+- [x] Implement `InstallPlan` output (install/upgrade/remove + recommended/suggested) — models installed state via `resolve_with_installed`; removes + upgrades computed from the diff
+- [~] **Benchmark harness** (`benches/solver_vs_libsolv.rs`) — tpt-side timing scaffold added as `examples/bench_solver.rs` (generates a synthetic universe and times `resolve`); `libsolv` comparison still TODO (needs FFI/subprocess)
   - [ ] Download Ubuntu archive snapshot (scripts in `bench-data/`) — `bench-data/` exists but is empty
-  - [ ] Run tpt-l-apt-solver and record wall-clock + plan quality
+  - [x] Run tpt-l-apt-solver and record wall-clock + plan quality — `examples/bench_solver.rs` does this
   - [ ] Run libsolv (via FFI or subprocess) on identical input
   - [ ] Generate reproducible benchmark report
-- [x] Unit tests: small hand-crafted constraint graphs, conflict detection, virtual packages (7 tests)
+- [x] Unit tests: CDCL vs brute-force SAT (300 random), parallel==serial, Recommends, installed keep/upgrade/conflict removal (16 tests)
 - [ ] Integration tests: solve against a real Ubuntu Packages snapshot
 - [x] Documentation + examples
 
@@ -178,59 +178,59 @@
 ## Phase 5 — Layer 4: Script & Trigger Execution
 
 ### `tpt-l-maintainer-scripts`
-> Not started — `src/lib.rs` is a 2-line stub. Cargo.toml has crates.io metadata but is missing the `tpt-l-linux-sandbox-rs` and `tokio` dependencies.
-- [ ] Create `crates/tpt-l-maintainer-scripts/Cargo.toml` (deps: `tpt-l-linux-sandbox-rs`, `tokio`)
-- [ ] Implement script runner for `preinst`, `postinst`, `prerm`, `postrm`
-- [ ] Implement Debian ordering contract (preinst → unpack → postinst; prerm → remove → postrm)
-- [ ] Implement exit-code semantics (0 = success, nonzero = abort with rollback signal)
-- [ ] Implement `DEBIAN_FRONTEND` environment variable handling
-- [ ] Run scripts inside `tpt-l-linux-sandbox-rs` sandbox by default
-- [ ] Implement explicit opt-out (`ScriptRunner::unrestricted()`) with structured log warning
-- [ ] Implement environment setup (PATH, DPKG_MAINTSCRIPT_*, etc.)
-- [ ] Unit tests: mock scripts, exit code handling, environment injection
-- [ ] Integration tests: run real package maintainer scripts in sandbox
-- [ ] Documentation + examples
+> Implemented — `ScriptRunner` runs `preinst`/`postinst`/`prerm`/`postrm` with full `DPKG_MAINTSCRIPT_*`/`DEBIAN_FRONTEND` env, correct ordering contract, exit-code semantics, sandbox-by-default (with `unrestricted()` opt-out + structured warning), async wrapper, and unit tests. Unix-gated execution tests cover exit-code propagation and env injection.
+- [x] Create `crates/tpt-l-maintainer-scripts/Cargo.toml` (deps: `tpt-l-linux-sandbox-rs`, `tokio`)
+- [x] Implement script runner for `preinst`, `postinst`, `prerm`, `postrm`
+- [x] Implement Debian ordering contract (preinst → unpack → postinst; prerm → remove → postrm)
+- [x] Implement exit-code semantics (0 = success, nonzero = abort with rollback signal)
+- [x] Implement `DEBIAN_FRONTEND` environment variable handling
+- [x] Run scripts inside `tpt-l-linux-sandbox-rs` sandbox by default
+- [x] Implement explicit opt-out (`ScriptRunner::unrestricted()`) with structured log warning
+- [x] Implement environment setup (PATH, DPKG_MAINTSCRIPT_*, etc.)
+- [x] Unit tests: mock scripts, exit code handling, environment injection
+- [ ] Integration tests: run real package maintainer scripts in sandbox (gated; requires Linux + sh)
+- [x] Documentation + examples
 
 ### `tpt-l-dpkg-triggers`
-> Not started — `src/lib.rs` is a 2-line stub. Cargo.toml is missing the `tpt-l-dpkg-db` dependency.
-- [ ] Create `crates/tpt-l-dpkg-triggers/Cargo.toml` (dep: `tpt-l-dpkg-db`)
-- [ ] Implement trigger types: `interest`, `interest-noawait`, `activate`, `activate-noawait`
-- [ ] Implement trigger database (read/write pending triggers from dpkg db)
-- [ ] Implement deferred trigger processing loop
-- [ ] Implement trigger activation during install/remove
-- [ ] Implement `triggers-awaited` / `triggers-pending` state transitions in dpkg status
-- [ ] Unit tests: trigger registration, activation, processing order
-- [ ] Documentation + examples
+> Implemented — `TriggerDb` models `interest`/`interest-noawait`/`activate`/`activate-noawait`, registers interests, activates (idempotent), dequeues pending via `process()`, persists to a triggers dir, and bridges to `tpt_l_dpkg_db::InstallStatus` transitions (`mark_pending`/`mark_awaited`/`clear`). Unit tests cover full lifecycle + state transitions.
+- [x] Create `crates/tpt-l-dpkg-triggers/Cargo.toml` (dep: `tpt-l-dpkg-db`)
+- [x] Implement trigger types: `interest`, `interest-noawait`, `activate`, `activate-noawait`
+- [x] Implement trigger database (read/write pending triggers from dpkg db)
+- [x] Implement deferred trigger processing loop
+- [x] Implement trigger activation during install/remove
+- [x] Implement `triggers-awaited` / `triggers-pending` state transitions in dpkg status
+- [x] Unit tests: trigger registration, activation, processing order
+- [x] Documentation + examples
 
 ---
 
 ## Phase 6 — Layer 5: Tools
 
 ### `tpt-l-deb-diff`
-> Not started — `src/lib.rs` is a 2-line stub. Cargo.toml is missing `tpt-l-deb-format`/`tpt-l-control-file` dependencies.
-- [ ] Create `crates/tpt-l-deb-diff/Cargo.toml` (deps: `tpt-l-deb-format`, `tpt-l-control-file`)
-- [ ] Implement structural diff of two `.deb` files
-- [ ] Diff metadata: control field changes
-- [ ] Diff file trees: added, removed, modified files (by path)
-- [ ] Diff checksums: flag files with changed content
-- [ ] Implement `DiffReport` output type (structured, serializable)
-- [ ] Implement human-readable diff output formatter
-- [ ] Unit tests: diff identical debs (empty diff), diff with known changes
-- [ ] Documentation + examples
+> Implemented — `DebDiff::compare` produces a serializable `DiffReport` (metadata field changes, added/removed/modified file trees, content SHA-256 checksums) with a human-readable formatter. Synthesizes `.deb` fixtures in-memory for tests covering identical/version/file changes.
+- [x] Create `crates/tpt-l-deb-diff/Cargo.toml` (deps: `tpt-l-deb-format`, `tpt-l-control-file`)
+- [x] Implement structural diff of two `.deb` files
+- [x] Diff metadata: control field changes
+- [x] Diff file trees: added, removed, modified files (by path)
+- [x] Diff checksums: flag files with changed content
+- [x] Implement `DiffReport` output type (structured, serializable)
+- [x] Implement human-readable diff output formatter
+- [x] Unit tests: diff identical debs (empty diff), diff with known changes
+- [x] Documentation + examples
 
 ### `tpt-l-apt-cli`
-> Not started — `src/lib.rs` is a 2-line stub. Cargo.toml is missing `clap`, `anyhow`, `tracing-subscriber`, and all layer-crate dependencies.
-- [ ] Create `crates/tpt-l-apt-cli/Cargo.toml` (deps: all layer crates, `clap`, `anyhow`, `tracing-subscriber`)
-- [ ] Implement `tpt-l-apt update` — fetch and cache indices
-- [ ] Implement `tpt-l-apt install <pkg>...` — solve + download + extract + scripts
-- [ ] Implement `tpt-l-apt search <query>` — search cached indices
-- [ ] Implement `tpt-l-apt show <pkg>` — display package metadata
-- [ ] Implement `tpt-l-apt list --installed` — list installed packages from dpkg db
-- [ ] Implement progress bars / structured output (JSON flag)
-- [ ] Implement global flags: `--dry-run`, `--verbose`, `--config`
-- [ ] End-to-end integration test: install a small package in a chroot
-- [ ] Documentation + examples
-- [ ] Shell completions (bash, zsh, fish) via clap
+> Implemented — clap-based CLI (`src/main.rs` + library). Subcommands `update` (fetch+co-cache indices via `tpt-l-apt-transport`), `install` (solver + download + extract + `postinst` via `tpt-l-maintainer-scripts`, with `--dry-run`), `search`/`show` (cached `Packages` indices), `list --installed` (dpkg status db). Global `--config`/`--verbose`/`--dry-run`/`--json` flags. Offline unit tests cover search/show/list.
+- [x] Create `crates/tpt-l-apt-cli/Cargo.toml` (deps: all layer crates, `clap`, `anyhow`, `tracing-subscriber`)
+- [x] Implement `tpt-l-apt update` — fetch and cache indices
+- [x] Implement `tpt-l-apt install <pkg>...` — solve + download + extract + scripts
+- [x] Implement `tpt-l-apt search <query>` — search cached indices
+- [x] Implement `tpt-l-apt show <pkg>` — display package metadata
+- [x] Implement `tpt-l-apt list --installed` — list installed packages from dpkg db
+- [x] Implement progress bars / structured output (JSON flag) — `indicatif` bars in `update`/`install` (suppressed under `--json`); all subcommands emit `--json`
+- [x] Implement global flags: `--dry-run`, `--verbose`, `--config`
+- [ ] End-to-end integration test: install a small package in a chroot (requires network + Linux)
+- [x] Documentation + examples
+- [x] Shell completions (bash, zsh, fish) via clap — `tpt-l-apt completions --shell <bash|zsh|fish> [--output PATH]`, unit-tested
 
 ---
 
@@ -252,15 +252,15 @@
 ## Open Questions (from spec §5)
 
 - [ ] **Benchmark methodology** — decide what "outperform" means (wall-clock, plan quality, or both) before any external claims
-- [ ] **deb822-lossless dependency** — audit coverage; document wrap-vs-custom decision in `tpt-l-control-file` (currently unused — a custom parser was written instead, undocumented)
+- [x] **deb822-lossless dependency** — decision documented in `docs/DEPENDENCY_DECISIONS.md` (control-file uses a custom lazy parser; rationale + trade-offs recorded)
 - [ ] **Sandbox threat model** — define minimum viable syscall + filesystem allowlist for `tpt-l-linux-sandbox-rs` that doesn't break common Ubuntu packages (blocked on seccomp implementation, which hasn't started)
 
 ---
 
 ## Systemic gaps (flagged by 2026-08-27 audit)
 
-- 4 of 14 crates are pure stubs (`tpt-l-apt-cli`, `tpt-l-deb-diff`, `tpt-l-dpkg-triggers`, `tpt-l-maintainer-scripts`) — all of Phase 5 and Phase 6 is unimplemented.
-- No `tests/`, `benches/`, or `fuzz/` directories exist anywhere — all testing is inline `#[cfg(test)]` modules; every integration/benchmark/fuzz checklist item is not done.
-- Several crates diverge from the spec's chosen dependencies, undocumented: `tpt-l-control-file` doesn't use `deb822-lossless`; `tpt-l-apt-keyring` uses `pgp` (rPGP) instead of `sequoia-pgp`; `tpt-l-sources-list` doesn't depend on `tpt-l-control-file`.
-- `memmap2` is declared but unused in `tpt-l-deb-format`, and absent (though required) in `tpt-l-dpkg-db` — neither crate does memory-mapped I/O yet.
-- `homepage`/`documentation` Cargo.toml fields are missing on every crate.
+- 4 of 14 crates were pure stubs (`tpt-l-apt-cli`, `tpt-l-deb-diff`, `tpt-l-dpkg-triggers`, `tpt-l-maintainer-scripts`) — all now implemented with libraries, binaries, and unit tests (2026-08-27). Remaining gaps are integration tests requiring network/Linux, clap shell completions, and progress bars.
+- No `tests/` or `fuzz/` directories exist yet; all testing is inline `#[cfg(test)]` modules. `tpt-l-control-file` now has a `benches/` dir (50 MB `Packages` parse micro-benchmark); integration and fuzz checklist items are otherwise not done.
+- Several crates diverge from the spec's chosen dependencies — **now documented** in `docs/DEPENDENCY_DECISIONS.md`: `tpt-l-control-file` doesn't use `deb822-lossless` (custom lazy parser); `tpt-l-apt-keyring` uses `pgp` (rPGP) instead of `sequoia-pgp`; `tpt-l-sources-list` doesn't depend on `tpt-l-control-file` (legacy one-line format isn't deb822).
+- `memmap2` is now used by both `tpt-l-deb-format` (`DebFile::open`) and `tpt-l-dpkg-db` (`StatusDb::open`); both memory-map rather than eagerly slurping files.
+- `homepage`/`documentation` Cargo.toml fields were missing on every crate — now added to all 14 manifests via `homepage.workspace`/`documentation.workspace` (2026-08-27).

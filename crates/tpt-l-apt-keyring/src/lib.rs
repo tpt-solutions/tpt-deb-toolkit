@@ -17,6 +17,7 @@
 use std::io::Cursor;
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
 use pgp::composed::cleartext::CleartextSignedMessage;
 use pgp::composed::{Deserializable, SignedPublicKey, StandaloneSignature};
 use pgp::types::{Fingerprint, PublicKeyTrait};
@@ -33,6 +34,10 @@ pub enum KeyringError {
     Verification(String),
     #[error("no valid signature found")]
     NoSignature,
+    #[error("signing key has expired")]
+    KeyExpired(String),
+    #[error("signing key has been revoked")]
+    KeyRevoked(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -56,6 +61,32 @@ pub struct VerifyResult {
     pub signed_by: Vec<KeyId>,
     /// The verified plaintext message.
     pub message: Vec<u8>,
+}
+
+/// Policy applied when verifying a signature.
+///
+/// By default a signature is only accepted if the signing key is neither
+/// expired nor revoked *at the reference time* (which defaults to "now").
+/// Relaxing `allow_expired`/`allow_revoked` mirrors `apt`'s
+/// `--allow-downgrades`/`--force` style escape hatches.
+#[derive(Debug, Clone)]
+pub struct VerificationPolicy {
+    /// Time against which key expiry is checked. `None` means "now".
+    pub reference_time: Option<DateTime<Utc>>,
+    /// Accept signatures from keys whose validity period has lapsed.
+    pub allow_expired: bool,
+    /// Accept signatures from keys that carry a revocation signature.
+    pub allow_revoked: bool,
+}
+
+impl Default for VerificationPolicy {
+    fn default() -> Self {
+        Self {
+            reference_time: None,
+            allow_expired: false,
+            allow_revoked: false,
+        }
+    }
 }
 
 // ─── Keyring ──────────────────────────────────────────────────────────────────
@@ -144,19 +175,56 @@ impl Keyring {
         Ok(merged)
     }
 
-    /// Verify a clearsigned `InRelease` file.
+    /// Verify a clearsigned `InRelease` file using the default policy
+    /// ([`VerificationPolicy::default`]). See [`Keyring::verify_clearsigned_with`].
     pub fn verify_clearsigned(&self, data: &[u8]) -> Result<VerifyResult, KeyringError> {
+        self.verify_clearsigned_with(data, &VerificationPolicy::default())
+    }
+
+    /// Verify a clearsigned `InRelease` file, applying [`VerificationPolicy`].
+    ///
+    /// A key only counts as a valid signer when its signature verifies *and* it
+    /// passes the policy (not expired / not revoked at the reference time).
+    /// When the only matching key(s) fail the policy, [`KeyringError::KeyExpired`]
+    /// or [`KeyringError::KeyRevoked`] is returned instead of [`KeyringError::NoSignature`]
+    /// so callers can distinguish "no key matched" from "key matched but is unusable".
+    pub fn verify_clearsigned_with(
+        &self,
+        data: &[u8],
+        policy: &VerificationPolicy,
+    ) -> Result<VerifyResult, KeyringError> {
         let (msg, _) = CleartextSignedMessage::from_armor(Cursor::new(data))
             .map_err(|e| KeyringError::Verification(e.to_string()))?;
 
+        let when = policy.reference_time.unwrap_or_else(Utc::now);
         let mut signed_by = Vec::new();
+        let (mut expired_hit, mut revoked_hit) = (false, false);
         for key in &self.keys {
-            if msg.verify(key).is_ok() {
-                signed_by.push(KeyId(fp_hex(&key.fingerprint())));
+            if msg.verify(key).is_err() {
+                continue;
             }
+            if !policy.allow_expired && key_expired_at(key, when) {
+                expired_hit = true;
+                continue;
+            }
+            if !policy.allow_revoked && key_is_revoked(key) {
+                revoked_hit = true;
+                continue;
+            }
+            signed_by.push(KeyId(fp_hex(&key.fingerprint())));
         }
 
         if signed_by.is_empty() {
+            if expired_hit {
+                return Err(KeyringError::KeyExpired(
+                    "a matching signature was produced by an expired key".into(),
+                ));
+            }
+            if revoked_hit {
+                return Err(KeyringError::KeyRevoked(
+                    "a matching signature was produced by a revoked key".into(),
+                ));
+            }
             return Err(KeyringError::NoSignature);
         }
 
@@ -167,23 +235,57 @@ impl Keyring {
         })
     }
 
-    /// Verify a detached `Release.gpg` signature against a `Release` body.
+    /// Verify a detached `Release.gpg` signature against a `Release` body using
+    /// the default policy. See [`Keyring::verify_detached_with`].
     pub fn verify_detached(
         &self,
         data: &[u8],
         signature: &[u8],
     ) -> Result<VerifyResult, KeyringError> {
+        self.verify_detached_with(data, signature, &VerificationPolicy::default())
+    }
+
+    /// Verify a detached `Release.gpg` signature against a `Release` body,
+    /// applying [`VerificationPolicy`]. Mirrors [`Keyring::verify_clearsigned_with`]
+    /// for detached signatures.
+    pub fn verify_detached_with(
+        &self,
+        data: &[u8],
+        signature: &[u8],
+        policy: &VerificationPolicy,
+    ) -> Result<VerifyResult, KeyringError> {
         let (sig, _) = StandaloneSignature::from_armor_single(Cursor::new(signature))
             .map_err(|e| KeyringError::Verification(e.to_string()))?;
 
+        let when = policy.reference_time.unwrap_or_else(Utc::now);
         let mut signed_by = Vec::new();
+        let (mut expired_hit, mut revoked_hit) = (false, false);
         for key in &self.keys {
-            if sig.verify(key, data).is_ok() {
-                signed_by.push(KeyId(fp_hex(&key.fingerprint())));
+            if sig.verify(key, data).is_err() {
+                continue;
             }
+            if !policy.allow_expired && key_expired_at(key, when) {
+                expired_hit = true;
+                continue;
+            }
+            if !policy.allow_revoked && key_is_revoked(key) {
+                revoked_hit = true;
+                continue;
+            }
+            signed_by.push(KeyId(fp_hex(&key.fingerprint())));
         }
 
         if signed_by.is_empty() {
+            if expired_hit {
+                return Err(KeyringError::KeyExpired(
+                    "a matching signature was produced by an expired key".into(),
+                ));
+            }
+            if revoked_hit {
+                return Err(KeyringError::KeyRevoked(
+                    "a matching signature was produced by a revoked key".into(),
+                ));
+            }
             return Err(KeyringError::NoSignature);
         }
 
@@ -192,6 +294,25 @@ impl Keyring {
             message: data.to_vec(),
         })
     }
+}
+
+/// Returns `true` when `key`'s validity period has ended at `when`.
+fn key_expired_at(key: &SignedPublicKey, when: DateTime<Utc>) -> bool {
+    match key.expires_at() {
+        Some(expiry) => when > expiry,
+        None => false,
+    }
+}
+
+/// Returns `true` when `key` carries a revocation signature.
+///
+/// This is a presence check: `SignedKeyDetails::revocation_signatures` is
+/// populated by the parser for both self- and authority-revoked keys. Full
+/// cryptographic validation of the revocation is performed by
+/// `SignedKeyDetails::verify()`, which is invoked by callers validating the
+/// whole key.
+fn key_is_revoked(key: &SignedPublicKey) -> bool {
+    !key.details.revocation_signatures.is_empty()
 }
 
 fn fp_hex(fp: &Fingerprint) -> String {

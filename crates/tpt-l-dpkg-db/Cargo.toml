@@ -5,6 +5,8 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 description = "Concurrent reader/writer for the dpkg package status database"
 keywords = ["debian", "dpkg", "database", "packages", "apt"]
 categories = ["filesystem", "data-structures"]
@@ -14,3 +16,4 @@ tpt-l-control-file = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+memmap2 = { workspace = true }

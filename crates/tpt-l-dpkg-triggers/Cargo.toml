@@ -5,9 +5,15 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 description = "dpkg trigger processing support"
 keywords = ["debian", "dpkg", "triggers", "package"]
 categories = ["os"]
 
 [dependencies]
 thiserror = { workspace = true }
+tpt-l-dpkg-db = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -146,6 +146,12 @@ impl AptConfig {
         self.get(key).unwrap_or(default)
     }
 
+    /// Parse an integer value at `key` (decimal, with surrounding whitespace
+    /// ignored). Returns `None` if the key is absent or not a valid integer.
+    pub fn get_int(&self, key: &str) -> Option<i64> {
+        self.get(key)?.trim().parse::<i64>().ok()
+    }
+
     /// Get a list value at `key`.  Returns an empty slice if absent or if the
     /// value is a scalar string.
     pub fn get_list(&self, key: &str) -> &[String] {
@@ -486,6 +492,7 @@ impl Parser {
 
             // Accumulate `::` chain.
             let mut key_parts = vec![seg];
+            let mut trailing_sep = false;
             loop {
                 self.skip_whitespace();
                 if self.current() == ':' && self.peek_ahead(1) == ':' {
@@ -494,9 +501,10 @@ impl Parser {
                     self.skip_whitespace();
                     let seg = self.read_key_segment();
                     if seg.is_empty() {
-                        // `::` followed by `{` — means start a nested scope using
-                        // the accumulated prefix.  Back up to let the brace be
-                        // handled below.
+                        // `::` followed directly by a value (e.g. `Key:: "v";`)
+                        // is APT's list-append syntax.  Flag it and let the
+                        // value parser below append to the list.
+                        trailing_sep = true;
                         break;
                     }
                     key_parts.push(seg);
@@ -513,6 +521,21 @@ impl Parser {
             };
 
             self.skip_whitespace();
+
+            if trailing_sep {
+                // `Key:: "value";` — append to the list at `full_key`.
+                if self.current() != '"' {
+                    return Err(ConfigError::Parse(format!(
+                        "expected '\"' after '::' for key {:?} at line {}",
+                        full_key, self.line
+                    )));
+                }
+                let value = self.read_string()?;
+                self.skip_whitespace();
+                self.expect_char(';')?;
+                cfg.push_list(&full_key, value);
+                continue;
+            }
 
             match self.current() {
                 '{' => {
@@ -689,5 +712,42 @@ APT::Get::Assume-Yes "true"; // inline comment ignored (not parsed here)
         std::fs::write(dir.path().join("10-override"), r#"Base "override";"#).unwrap();
         let cfg = AptConfig::load_dir(dir.path()).unwrap();
         assert_eq!(cfg.get("Base"), Some("override"));
+    }
+
+    #[test]
+    fn get_int_parses_integer() {
+        let mut cfg = AptConfig::new();
+        cfg.set("APT::Acquire::Retries", "3");
+        assert_eq!(cfg.get_int("APT::Acquire::Retries"), Some(3));
+        assert_eq!(cfg.get_int("missing"), None);
+        cfg.set("Bad", "not-a-number");
+        assert_eq!(cfg.get_int("Bad"), None);
+    }
+
+    #[test]
+    fn list_append_syntax_builds_list() {
+        let input = r#"
+Acquire::http::Proxy:: "http://proxy1:3128";
+Acquire::http::Proxy:: "http://proxy2:3128";
+"#;
+        let mut cfg = AptConfig::new();
+        parse_into(input, "", &mut cfg).unwrap();
+        let list = cfg.get_list("Acquire::http::Proxy");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0], "http://proxy1:3128");
+        assert_eq!(list[1], "http://proxy2:3128");
+    }
+
+    #[test]
+    fn scalar_and_list_keys_are_distinct() {
+        let mut cfg = AptConfig::new();
+        parse_into(r#"Key "scalar"; Key:: "a"; Key:: "b";"#, "", &mut cfg).unwrap();
+        // A `Key "x"` scalar followed by `Key::` appends becomes a list.
+        assert_eq!(cfg.get("Key"), None);
+        let list = cfg.get_list("Key");
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0], "scalar");
+        assert_eq!(list[1], "a");
+        assert_eq!(list[2], "b");
     }
 }

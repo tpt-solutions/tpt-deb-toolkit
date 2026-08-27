@@ -5,9 +5,31 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
 description = "Command-line interface for the tpt-deb-toolkit APT layer"
 keywords = ["apt", "debian", "cli", "package", "manager"]
 categories = ["command-line-utilities"]
 
 [dependencies]
-thiserror = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+clap_complete = "4"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true }
+flate2 = { workspace = true }
+tpt-l-apt-transport = { workspace = true }
+tpt-l-apt-solver = { workspace = true }
+tpt-l-control-file = { workspace = true }
+tpt-l-deb-format = { workspace = true }
+tpt-l-dpkg-db = { workspace = true }
+tpt-l-sources-list = { workspace = true }
+tpt-l-maintainer-scripts = { workspace = true }
+tpt-l-deb-version = { workspace = true }
+indicatif = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
