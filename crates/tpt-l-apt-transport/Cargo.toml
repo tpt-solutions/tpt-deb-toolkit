@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Async HTTP transport for APT: index fetching, mirror failover, partial downloads"
 keywords = ["apt", "http", "download", "debian", "async"]
 categories = ["network-programming", "asynchronous"]

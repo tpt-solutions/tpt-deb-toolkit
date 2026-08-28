@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Concurrent reader/writer for the dpkg package status database"
 keywords = ["debian", "dpkg", "database", "packages", "apt"]
 categories = ["filesystem", "data-structures"]

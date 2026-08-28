@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Debian maintainer script execution and sandboxing"
 keywords = ["debian", "dpkg", "maintainer", "scripts", "package"]
 categories = ["os"]

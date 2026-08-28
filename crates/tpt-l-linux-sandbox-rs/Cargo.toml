@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Linux namespace and seccomp sandbox for Debian maintainer scripts"
 keywords = ["sandbox", "linux", "seccomp", "namespace", "debian"]
 categories = ["os::linux-apis", "command-line-utilities"]

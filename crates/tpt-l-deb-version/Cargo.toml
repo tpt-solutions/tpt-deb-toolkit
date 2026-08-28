@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Debian version comparison: epoch, upstream version, debian revision"
 keywords = ["debian", "version", "dpkg", "apt", "package"]
 categories = ["parsing", "data-structures"]

@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Command-line interface for the tpt-deb-toolkit APT layer"
 keywords = ["apt", "debian", "cli", "package", "manager"]
 categories = ["command-line-utilities"]

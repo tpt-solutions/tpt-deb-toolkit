@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Reader for Debian .deb binary package files (ar + tar archives)"
 keywords = ["debian", "deb", "ar", "tar", "package"]
 categories = ["parsing", "data-structures", "compression"]

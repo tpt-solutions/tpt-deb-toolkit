@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Parser and writer for APT sources.list and deb822 .sources files"
 keywords = ["apt", "debian", "sources", "repository", "package"]
 categories = ["parsing", "filesystem"]

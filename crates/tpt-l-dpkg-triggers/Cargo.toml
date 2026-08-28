@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "dpkg trigger processing support"
 keywords = ["debian", "dpkg", "triggers", "package"]
 categories = ["os"]

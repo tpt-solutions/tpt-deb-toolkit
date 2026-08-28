@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+readme = "README.md"
 description = "Parallel DPLL SAT-based dependency resolver for Debian packages"
 keywords = ["apt", "solver", "dependency", "sat", "debian"]
 categories = ["algorithms", "data-structures"]
