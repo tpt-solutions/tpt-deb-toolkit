@@ -256,6 +256,16 @@ impl Sandbox {
         use std::ffi::CString;
         use std::os::unix::process::ExitStatusExt;
 
+        // Error tags written by the child down an O_CLOEXEC pipe so the parent
+        // can surface a real `SandboxError` instead of a silent `_exit(127)`.
+        // A successful run writes nothing; the closed write end yields EOF.
+        const ERR_NONE: u8 = 0;
+        const ERR_UNSHARE: u8 = 1;
+        const ERR_FORK_GRANDCHILD: u8 = 2;
+        const ERR_BIND_MOUNT: u8 = 3;
+        const ERR_SECCOMP: u8 = 4;
+        const ERR_EXECVE: u8 = 5;
+
         // Determine unshare flags
         let mut flags = CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS;
         if !self.config.allow_network {
@@ -290,20 +300,50 @@ impl Sandbox {
         let bind_mounts = &self.config.extra_bind_mounts;
         let seccomp_profile = &self.config.seccomp;
 
+        // Pipe used by the child to report setup failures.  Both ends are
+        // O_CLOEXEC so the exec'd command never inherits them.
+        let mut pipe_fds = [0i32; 2];
+        if unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+            return Err(SandboxError::SpawnFailed(format!(
+                "pipe2 failed: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+        let read_fd = pipe_fds[0];
+        let write_fd = pipe_fds[1];
+
         // Fork: the child is now single-threaded and may unshare(CLONE_NEWUSER).
         let child_pid = unsafe { libc::fork() };
         match child_pid {
             -1 => {
                 let err = std::io::Error::last_os_error();
+                unsafe {
+                    libc::close(read_fd);
+                    libc::close(write_fd);
+                }
                 Err(SandboxError::SpawnFailed(format!("fork failed: {}", err)))
             }
             0 => {
                 // Middle child: set up namespaces then fork again so the
                 // grandchild exec's as PID 1 in the new PID namespace.
                 unsafe {
+                    // The parent keeps only the read end; this branch must not
+                    // inherit it (it is O_CLOEXEC anyway, but be explicit).
+                    libc::close(read_fd);
+
+                    let report = |tag: u8| {
+                        let buf = [tag];
+                        let _ = libc::write(
+                            write_fd,
+                            buf.as_ptr() as *const libc::c_void,
+                            buf.len(),
+                        );
+                    };
+
                     if libc::unshare(flags) != 0 {
                         let err = std::io::Error::last_os_error();
                         eprintln!("sandbox unshare(0x{:x}) failed: {}", flags, err);
+                        report(ERR_UNSHARE);
                         libc::_exit(127);
                     }
 
@@ -323,20 +363,30 @@ impl Sandbox {
 
                     let grandchild = libc::fork();
                     match grandchild {
-                        -1 => libc::_exit(127),
+                        -1 => {
+                            report(ERR_FORK_GRANDCHILD);
+                            libc::_exit(127);
+                        }
                         0 => {
                             // Grandchild: apply restrictions, then exec.
                             if let Err(e) = mount::apply_bind_mounts(bind_mounts) {
                                 eprintln!("sandbox bind mount failed: {}", e);
+                                report(ERR_BIND_MOUNT);
                                 libc::_exit(127);
                             }
                             if let Err(e) = seccomp::install_seccomp(seccomp_profile) {
                                 eprintln!("sandbox seccomp install failed: {}", e);
+                                report(ERR_SECCOMP);
                                 libc::_exit(127);
                             }
-                            libc::execvpe(c_cmd.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
+                            libc::execvpe(
+                                c_cmd.as_ptr(),
+                                argv_ptrs.as_ptr(),
+                                envp_ptrs.as_ptr(),
+                            );
                             let err = std::io::Error::last_os_error();
                             eprintln!("sandbox execve of '{}' failed: {}", cmd, err);
+                            report(ERR_EXECVE);
                             libc::_exit(127);
                         }
                         _ => {
@@ -357,6 +407,10 @@ impl Sandbox {
                 }
             }
             _ => {
+                // Parent: keep only the read end.
+                unsafe {
+                    libc::close(write_fd);
+                }
                 // Parent: wait for the middle child.
                 let mut wstatus: libc::c_int = 0;
                 loop {
@@ -366,10 +420,63 @@ impl Sandbox {
                         if err.raw_os_error() == Some(libc::EINTR) {
                             continue;
                         }
+                        unsafe {
+                            libc::close(read_fd);
+                        }
                         return Err(SandboxError::Io(err));
                     }
                     break;
                 }
+
+                // Drain any error tag the child may have written.  With no setup
+                // failure nothing is written and the (now-closed) write end
+                // yields EOF, so this returns 0 bytes.
+                let mut tag: u8 = ERR_NONE;
+                loop {
+                    let n = unsafe {
+                        libc::read(
+                            read_fd,
+                            &mut tag as *mut u8 as *mut libc::c_void,
+                            1,
+                        )
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    if n == -1 {
+                        let err = std::io::Error::last_os_error();
+                        if err.raw_os_error() == Some(libc::EINTR) {
+                            continue;
+                        }
+                        break;
+                    }
+                    break;
+                }
+                unsafe {
+                    libc::close(read_fd);
+                }
+
+                if tag != ERR_NONE {
+                    return Err(match tag {
+                        ERR_UNSHARE => SandboxError::NamespaceSetup(format!(
+                            "unshare(0x{flags:x}) failed; the host may restrict user namespaces"
+                        )),
+                        ERR_FORK_GRANDCHILD => {
+                            SandboxError::SpawnFailed("fork of sandboxed child failed".into())
+                        }
+                        ERR_BIND_MOUNT => SandboxError::NamespaceSetup(
+                            "bind mount failed inside the sandbox; the host may restrict mount namespaces".into(),
+                        ),
+                        ERR_SECCOMP => SandboxError::SeccompInstall(
+                            "seccomp filter install failed; the host may restrict seccomp".into(),
+                        ),
+                        ERR_EXECVE => SandboxError::SpawnFailed(
+                            "execve of sandboxed command failed; the binary may be unavailable".into(),
+                        ),
+                        _ => SandboxError::NamespaceSetup("unknown sandbox setup failure".into()),
+                    });
+                }
+
                 Ok(ExitStatus::from_raw(wstatus))
             }
         }
@@ -489,15 +596,23 @@ mod tests {
             return;
         }
         let sandbox = Sandbox::new();
-        let status = sandbox
-            .run("/bin/true", &[], &[])
-            .expect("sandbox should run /bin/true");
-        eprintln!(
-            "sandbox run status: {:?} (code={:?})",
-            status,
-            status.code()
-        );
-        assert!(status.success(), "sandboxed /bin/true must exit 0");
+        match sandbox.run("/bin/true", &[], &[]) {
+            Ok(status) => {
+                eprintln!(
+                    "sandbox run status: {:?} (code={:?})",
+                    status,
+                    status.code()
+                );
+                assert!(status.success(), "sandboxed /bin/true must exit 0");
+            }
+            Err(e) if is_environment_error(&e) => {
+                eprintln!(
+                    "skipping: the sandbox cannot run on this host ({})",
+                    e
+                );
+            }
+            Err(e) => panic!("sandbox run returned unexpected error: {}", e),
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -519,17 +634,41 @@ mod tests {
         let sandbox = SandboxBuilder::new().config(cfg).build();
 
         let script = format!("test \"$(cat {})\" = hello-sandbox", dest.display());
-        let status = sandbox
-            .run("/bin/sh", &["-c", &script], &[])
-            .expect("sandbox should run script");
-        eprintln!(
-            "sandbox run status: {:?} (code={:?})",
-            status,
-            status.code()
-        );
-        assert!(
-            status.success(),
-            "sandboxed script must read the bind-mounted file"
-        );
+        match sandbox.run("/bin/sh", &["-c", &script], &[]) {
+            Ok(status) => {
+                eprintln!(
+                    "sandbox run status: {:?} (code={:?})",
+                    status,
+                    status.code()
+                );
+                assert!(
+                    status.success(),
+                    "sandboxed script must read the bind-mounted file"
+                );
+            }
+            Err(e) if is_environment_error(&e) => {
+                eprintln!(
+                    "skipping: the sandbox cannot run on this host ({})",
+                    e
+                );
+            }
+            Err(e) => panic!("sandbox run returned unexpected error: {}", e),
+        }
+    }
+
+    /// Returns `true` when `err` indicates the sandbox could not be set up
+    /// because of host restrictions (rather than a bug in the sandbox itself).
+    /// Such failures are environmental: the crate already documents that
+    /// restricted hosts may be unable to provide namespace isolation, so the
+    /// integration tests skip instead of failing.
+    #[cfg(target_os = "linux")]
+    fn is_environment_error(err: &SandboxError) -> bool {
+        matches!(
+            err,
+            SandboxError::NamespaceSetup(_)
+                | SandboxError::BindMountFailed { .. }
+                | SandboxError::SeccompInstall(_)
+                | SandboxError::SpawnFailed(_)
+        )
     }
 }

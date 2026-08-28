@@ -75,6 +75,16 @@ pub(crate) fn apply_bind_mounts(mounts: &[BindMount]) -> Result<(), SandboxError
     use std::io;
     use std::os::unix::ffi::OsStrExt;
 
+    // Nothing to do when no bind mounts were requested.  Skipping the
+    // `mount(MS_REC | MS_PRIVATE, "/")` call here matters because some hosts
+    // (notably CI runners with restricted user namespaces) deny the
+    // propagation-change mount even though they otherwise permit the sandbox to
+    // run.  A maintainer-script profile with no extra mounts must not pay for a
+    // mount syscall it does not need.
+    if mounts.is_empty() {
+        return Ok(());
+    }
+
     unsafe {
         // Mark the whole tree private so our mounts do not leak to the host.
         let root = std::ffi::CString::new("/").unwrap();
