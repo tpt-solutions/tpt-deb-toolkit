@@ -311,9 +311,15 @@ impl Sandbox {
                     // must be denied before the gid_map can be written.
                     let uid_map = format!("0 {} 1\n", uid);
                     let gid_map = format!("0 {} 1\n", gid);
-                    let _ = std::fs::write("/proc/self/uid_map", uid_map.as_bytes());
-                    let _ = std::fs::write("/proc/self/setgroups", b"deny");
-                    let _ = std::fs::write("/proc/self/gid_map", gid_map.as_bytes());
+                    if let Err(e) = std::fs::write("/proc/self/uid_map", uid_map.as_bytes()) {
+                        eprintln!("sandbox write of uid_map failed: {}", e);
+                    }
+                    if let Err(e) = std::fs::write("/proc/self/setgroups", b"deny") {
+                        eprintln!("sandbox write of setgroups failed: {}", e);
+                    }
+                    if let Err(e) = std::fs::write("/proc/self/gid_map", gid_map.as_bytes()) {
+                        eprintln!("sandbox write of gid_map failed: {}", e);
+                    }
 
                     let grandchild = libc::fork();
                     match grandchild {
@@ -329,6 +335,8 @@ impl Sandbox {
                                 libc::_exit(127);
                             }
                             libc::execvpe(c_cmd.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
+                            let err = std::io::Error::last_os_error();
+                            eprintln!("sandbox execve of '{}' failed: {}", cmd, err);
                             libc::_exit(127);
                         }
                         _ => {
@@ -484,6 +492,11 @@ mod tests {
         let status = sandbox
             .run("/bin/true", &[], &[])
             .expect("sandbox should run /bin/true");
+        eprintln!(
+            "sandbox run status: {:?} (code={:?})",
+            status,
+            status.code()
+        );
         assert!(status.success(), "sandboxed /bin/true must exit 0");
     }
 
@@ -509,6 +522,11 @@ mod tests {
         let status = sandbox
             .run("/bin/sh", &["-c", &script], &[])
             .expect("sandbox should run script");
+        eprintln!(
+            "sandbox run status: {:?} (code={:?})",
+            status,
+            status.code()
+        );
         assert!(
             status.success(),
             "sandboxed script must read the bind-mounted file"
