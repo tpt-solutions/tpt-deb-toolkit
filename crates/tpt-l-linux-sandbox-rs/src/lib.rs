@@ -333,11 +333,8 @@ impl Sandbox {
 
                     let report = |tag: u8| {
                         let buf = [tag];
-                        let _ = libc::write(
-                            write_fd,
-                            buf.as_ptr() as *const libc::c_void,
-                            buf.len(),
-                        );
+                        let _ =
+                            libc::write(write_fd, buf.as_ptr() as *const libc::c_void, buf.len());
                     };
 
                     if libc::unshare(flags) != 0 {
@@ -379,11 +376,7 @@ impl Sandbox {
                                 report(ERR_SECCOMP);
                                 libc::_exit(127);
                             }
-                            libc::execvpe(
-                                c_cmd.as_ptr(),
-                                argv_ptrs.as_ptr(),
-                                envp_ptrs.as_ptr(),
-                            );
+                            libc::execvpe(c_cmd.as_ptr(), argv_ptrs.as_ptr(), envp_ptrs.as_ptr());
                             let err = std::io::Error::last_os_error();
                             eprintln!("sandbox execve of '{}' failed: {}", cmd, err);
                             report(ERR_EXECVE);
@@ -433,13 +426,8 @@ impl Sandbox {
                 // yields EOF, so this returns 0 bytes.
                 let mut tag: u8 = ERR_NONE;
                 loop {
-                    let n = unsafe {
-                        libc::read(
-                            read_fd,
-                            &mut tag as *mut u8 as *mut libc::c_void,
-                            1,
-                        )
-                    };
+                    let n =
+                        unsafe { libc::read(read_fd, &mut tag as *mut u8 as *mut libc::c_void, 1) };
                     if n == 0 {
                         break;
                     }
@@ -606,10 +594,7 @@ mod tests {
                 assert!(status.success(), "sandboxed /bin/true must exit 0");
             }
             Err(e) if is_environment_error(&e) => {
-                eprintln!(
-                    "skipping: the sandbox cannot run on this host ({})",
-                    e
-                );
+                eprintln!("skipping: the sandbox cannot run on this host ({})", e);
             }
             Err(e) => panic!("sandbox run returned unexpected error: {}", e),
         }
@@ -647,10 +632,7 @@ mod tests {
                 );
             }
             Err(e) if is_environment_error(&e) => {
-                eprintln!(
-                    "skipping: the sandbox cannot run on this host ({})",
-                    e
-                );
+                eprintln!("skipping: the sandbox cannot run on this host ({})", e);
             }
             Err(e) => panic!("sandbox run returned unexpected error: {}", e),
         }

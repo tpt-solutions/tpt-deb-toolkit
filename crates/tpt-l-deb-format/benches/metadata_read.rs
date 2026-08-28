@@ -11,7 +11,7 @@
 //! The second number should be roughly independent of payload size, which is
 //! the property the "zero-copy metadata read" claim relies on.
 
-use std::io::{Cursor, Read, Write};
+use std::io::Write;
 use std::time::Instant;
 
 use flate2::{write::GzEncoder, Compression};
