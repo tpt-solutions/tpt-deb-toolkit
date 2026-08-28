@@ -574,7 +574,7 @@ fn extract_data_tar(data: &[u8], ext: &str, dest: &Path) -> Result<(), DebError>
             {
                 if let Some(link) = entry.link_name()? {
                     let _ = std::fs::remove_file(&target);
-                    std::os::unix::fs::symlink(link.into_owned(), &target)?;
+                    std::os::unix::fs::symlink(&link, &target)?;
                 }
             }
         }

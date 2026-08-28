@@ -448,8 +448,30 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    fn namespaces_available() -> bool {
+        // Detect whether the host permits unprivileged user namespaces, which
+        // the sandbox depends on.  When they are disabled (common inside some
+        // CI containers) `unshare(CLONE_NEWUSER)` fails with EPERM and the
+        // sandbox cannot isolate anything; such tests are skipped instead.
+        unsafe {
+            let pid = libc::fork();
+            if pid == 0 {
+                let ok = libc::unshare(libc::CLONE_NEWUSER) == 0;
+                libc::_exit(if ok { 0 } else { 1 });
+            }
+            let mut status: libc::c_int = 0;
+            libc::waitpid(pid, &mut status, 0);
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0
+        }
+    }
+
+    #[cfg(target_os = "linux")]
     #[test]
     fn runs_a_real_script_inside_the_sandbox() {
+        if !namespaces_available() {
+            eprintln!("skipping: user namespaces are unavailable on this host");
+            return;
+        }
         let sandbox = Sandbox::new();
         let status = sandbox
             .run("/bin/true", &[], &[])
@@ -460,6 +482,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn bind_mount_is_visible_inside_the_sandbox() {
+        if !namespaces_available() {
+            eprintln!("skipping: user namespaces are unavailable on this host");
+            return;
+        }
         use std::io::Write;
         let host = tempfile::NamedTempFile::new().expect("temp file");
         host.as_file()
