@@ -90,161 +90,202 @@ impl SeccompProfile {
     /// services such as `systemd`-notify.  Denied syscalls fail with `EPERM`
     /// rather than killing the process.
     #[cfg(target_os = "linux")]
-    #[allow(clippy::unnecessary_cast)]
+    #[allow(clippy::unnecessary_cast, clippy::too_many_lines)]
     pub fn maintainer_script_profile() -> Self {
         use libc::*;
-        let rules = vec![
-            SeccompRule::AllowSyscall(SYS_read as i64),
-            SeccompRule::AllowSyscall(SYS_write as i64),
-            SeccompRule::AllowSyscall(SYS_readv as i64),
-            SeccompRule::AllowSyscall(SYS_writev as i64),
-            SeccompRule::AllowSyscall(SYS_pread64 as i64),
-            SeccompRule::AllowSyscall(SYS_pwrite64 as i64),
-            SeccompRule::AllowSyscall(SYS_open as i64),
-            SeccompRule::AllowSyscall(SYS_openat as i64),
-            SeccompRule::AllowSyscall(SYS_close as i64),
-            SeccompRule::AllowSyscall(SYS_close_range as i64),
-            SeccompRule::AllowSyscall(SYS_lseek as i64),
-            SeccompRule::AllowSyscall(SYS_ftruncate as i64),
-            SeccompRule::AllowSyscall(SYS_truncate as i64),
-            SeccompRule::AllowSyscall(SYS_fstat as i64),
-            SeccompRule::AllowSyscall(SYS_newfstatat as i64),
-            SeccompRule::AllowSyscall(SYS_lstat as i64),
-            SeccompRule::AllowSyscall(SYS_stat as i64),
-            SeccompRule::AllowSyscall(SYS_statx as i64),
-            SeccompRule::AllowSyscall(SYS_access as i64),
-            SeccompRule::AllowSyscall(SYS_faccessat as i64),
-            SeccompRule::AllowSyscall(SYS_faccessat2 as i64),
-            SeccompRule::AllowSyscall(SYS_dup as i64),
-            SeccompRule::AllowSyscall(SYS_dup2 as i64),
-            SeccompRule::AllowSyscall(SYS_dup3 as i64),
-            SeccompRule::AllowSyscall(SYS_fcntl as i64),
-            SeccompRule::AllowSyscall(SYS_ioctl as i64),
-            SeccompRule::AllowSyscall(SYS_pipe as i64),
-            SeccompRule::AllowSyscall(SYS_pipe2 as i64),
-            SeccompRule::AllowSyscall(SYS_poll as i64),
-            SeccompRule::AllowSyscall(SYS_ppoll as i64),
-            SeccompRule::AllowSyscall(SYS_select as i64),
-            SeccompRule::AllowSyscall(SYS_pselect6 as i64),
-            SeccompRule::AllowSyscall(SYS_getpid as i64),
-            SeccompRule::AllowSyscall(SYS_getppid as i64),
-            SeccompRule::AllowSyscall(SYS_gettid as i64),
-            SeccompRule::AllowSyscall(SYS_getuid as i64),
-            SeccompRule::AllowSyscall(SYS_geteuid as i64),
-            SeccompRule::AllowSyscall(SYS_getgid as i64),
-            SeccompRule::AllowSyscall(SYS_getegid as i64),
-            SeccompRule::AllowSyscall(SYS_getgroups as i64),
-            SeccompRule::AllowSyscall(SYS_getcwd as i64),
-            SeccompRule::AllowSyscall(SYS_chdir as i64),
-            SeccompRule::AllowSyscall(SYS_fchdir as i64),
-            SeccompRule::AllowSyscall(SYS_mkdir as i64),
-            SeccompRule::AllowSyscall(SYS_mkdirat as i64),
-            SeccompRule::AllowSyscall(SYS_rmdir as i64),
-            SeccompRule::AllowSyscall(SYS_unlink as i64),
-            SeccompRule::AllowSyscall(SYS_unlinkat as i64),
-            SeccompRule::AllowSyscall(SYS_rename as i64),
-            SeccompRule::AllowSyscall(SYS_renameat as i64),
-            SeccompRule::AllowSyscall(SYS_renameat2 as i64),
-            SeccompRule::AllowSyscall(SYS_symlink as i64),
-            SeccompRule::AllowSyscall(SYS_symlinkat as i64),
-            SeccompRule::AllowSyscall(SYS_link as i64),
-            SeccompRule::AllowSyscall(SYS_linkat as i64),
-            SeccompRule::AllowSyscall(SYS_readlink as i64),
-            SeccompRule::AllowSyscall(SYS_readlinkat as i64),
-            SeccompRule::AllowSyscall(SYS_chmod as i64),
-            SeccompRule::AllowSyscall(SYS_fchmod as i64),
-            SeccompRule::AllowSyscall(SYS_fchmodat as i64),
-            SeccompRule::AllowSyscall(SYS_chown as i64),
-            SeccompRule::AllowSyscall(SYS_fchown as i64),
-            SeccompRule::AllowSyscall(SYS_fchownat as i64),
-            SeccompRule::AllowSyscall(SYS_lchown as i64),
-            SeccompRule::AllowSyscall(SYS_umask as i64),
-            SeccompRule::AllowSyscall(SYS_utime as i64),
-            SeccompRule::AllowSyscall(SYS_utimes as i64),
-            SeccompRule::AllowSyscall(SYS_utimensat as i64),
-            SeccompRule::AllowSyscall(SYS_mknod as i64),
-            SeccompRule::AllowSyscall(SYS_mknodat as i64),
-            SeccompRule::AllowSyscall(SYS_mount as i64),
-            SeccompRule::AllowSyscall(SYS_umount2 as i64),
-            SeccompRule::AllowSyscall(SYS_fork as i64),
-            SeccompRule::AllowSyscall(SYS_vfork as i64),
-            SeccompRule::AllowSyscall(SYS_clone as i64),
-            SeccompRule::AllowSyscall(SYS_clone3 as i64),
-            SeccompRule::AllowSyscall(SYS_execve as i64),
-            SeccompRule::AllowSyscall(SYS_execveat as i64),
-            SeccompRule::AllowSyscall(SYS_wait4 as i64),
-            SeccompRule::AllowSyscall(SYS_waitid as i64),
-            SeccompRule::AllowSyscall(SYS_exit as i64),
-            SeccompRule::AllowSyscall(SYS_exit_group as i64),
-            SeccompRule::AllowSyscall(SYS_kill as i64),
-            SeccompRule::AllowSyscall(SYS_tgkill as i64),
-            SeccompRule::AllowSyscall(SYS_tkill as i64),
-            SeccompRule::AllowSyscall(SYS_rt_sigaction as i64),
-            SeccompRule::AllowSyscall(SYS_rt_sigprocmask as i64),
-            SeccompRule::AllowSyscall(SYS_rt_sigreturn as i64),
-            SeccompRule::AllowSyscall(SYS_sigaltstack as i64),
-            SeccompRule::AllowSyscall(SYS_pause as i64),
-            SeccompRule::AllowSyscall(SYS_nanosleep as i64),
-            SeccompRule::AllowSyscall(SYS_clock_nanosleep as i64),
-            SeccompRule::AllowSyscall(SYS_clock_gettime as i64),
-            SeccompRule::AllowSyscall(SYS_clock_getres as i64),
-            SeccompRule::AllowSyscall(SYS_gettimeofday as i64),
-            SeccompRule::AllowSyscall(SYS_time as i64),
-            SeccompRule::AllowSyscall(SYS_getrlimit as i64),
-            SeccompRule::AllowSyscall(SYS_setrlimit as i64),
-            SeccompRule::AllowSyscall(SYS_prlimit64 as i64),
-            SeccompRule::AllowSyscall(SYS_prctl as i64),
-            SeccompRule::AllowSyscall(SYS_personality as i64),
-            SeccompRule::AllowSyscall(SYS_arch_prctl as i64),
-            SeccompRule::AllowSyscall(SYS_set_tid_address as i64),
-            SeccompRule::AllowSyscall(SYS_set_robust_list as i64),
-            SeccompRule::AllowSyscall(SYS_get_robust_list as i64),
-            SeccompRule::AllowSyscall(SYS_futex as i64),
-            SeccompRule::AllowSyscall(SYS_mmap as i64),
-            SeccompRule::AllowSyscall(SYS_munmap as i64),
-            SeccompRule::AllowSyscall(SYS_mprotect as i64),
-            SeccompRule::AllowSyscall(SYS_mremap as i64),
-            SeccompRule::AllowSyscall(SYS_madvise as i64),
-            SeccompRule::AllowSyscall(SYS_brk as i64),
-            SeccompRule::AllowSyscall(SYS_mlock as i64),
-            SeccompRule::AllowSyscall(SYS_munlock as i64),
-            SeccompRule::AllowSyscall(SYS_getdents as i64),
-            SeccompRule::AllowSyscall(SYS_getdents64 as i64),
-            SeccompRule::AllowSyscall(SYS_sched_yield as i64),
-            SeccompRule::AllowSyscall(SYS_sched_getaffinity as i64),
-            SeccompRule::AllowSyscall(SYS_sched_setaffinity as i64),
-            SeccompRule::AllowSyscall(SYS_getpriority as i64),
-            SeccompRule::AllowSyscall(SYS_setpriority as i64),
-            SeccompRule::AllowSyscall(SYS_capget as i64),
-            SeccompRule::AllowSyscall(SYS_capset as i64),
-            SeccompRule::AllowSyscall(SYS_getrandom as i64),
-            SeccompRule::AllowSyscall(SYS_memfd_create as i64),
-            SeccompRule::AllowSyscall(SYS_eventfd2 as i64),
-            SeccompRule::AllowSyscall(SYS_epoll_create1 as i64),
-            SeccompRule::AllowSyscall(SYS_epoll_ctl as i64),
-            SeccompRule::AllowSyscall(SYS_epoll_wait as i64),
-            SeccompRule::AllowSyscall(SYS_timerfd_create as i64),
-            SeccompRule::AllowSyscall(SYS_timerfd_settime as i64),
-            SeccompRule::AllowSyscall(SYS_timerfd_gettime as i64),
-            SeccompRule::AllowSyscall(SYS_signalfd4 as i64),
-            SeccompRule::AllowSyscall(SYS_socketpair as i64),
-            SeccompRule::AllowSyscall(SYS_bind as i64),
-            SeccompRule::AllowSyscall(SYS_connect as i64),
-            SeccompRule::AllowSyscall(SYS_listen as i64),
-            SeccompRule::AllowSyscall(SYS_accept as i64),
-            SeccompRule::AllowSyscall(SYS_accept4 as i64),
-            SeccompRule::AllowSyscall(SYS_getsockname as i64),
-            SeccompRule::AllowSyscall(SYS_getpeername as i64),
-            SeccompRule::AllowSyscall(SYS_sendto as i64),
-            SeccompRule::AllowSyscall(SYS_recvfrom as i64),
-            SeccompRule::AllowSyscall(SYS_sendmsg as i64),
-            SeccompRule::AllowSyscall(SYS_recvmsg as i64),
-            SeccompRule::AllowSyscall(SYS_getsockopt as i64),
-            SeccompRule::AllowSyscall(SYS_setsockopt as i64),
-            SeccompRule::AllowSyscall(SYS_shutdown as i64),
-            SeccompRule::AllowSyscallIfArg(SYS_socket as i64, 0, AF_UNIX as u64),
-            SeccompRule::AllowSyscallIfArg(SYS_socket as i64, 0, AF_NETLINK as u64),
+
+        let mut rules: Vec<SeccompRule> = Vec::new();
+
+        // Syscalls that exist under the same name on every architecture this
+        // crate targets.  arm64 only exposes the "unified" syscall table
+        // (`openat`, `newfstatat`, `getdents64`, ...); the matching legacy
+        // aliases for x86-64 are appended below.
+        let common: &[i64] = &[
+            SYS_read as i64,
+            SYS_write as i64,
+            SYS_readv as i64,
+            SYS_writev as i64,
+            SYS_pread64 as i64,
+            SYS_pwrite64 as i64,
+            SYS_openat as i64,
+            SYS_close as i64,
+            SYS_close_range as i64,
+            SYS_lseek as i64,
+            SYS_ftruncate as i64,
+            SYS_truncate as i64,
+            SYS_fstat as i64,
+            SYS_newfstatat as i64,
+            SYS_statx as i64,
+            SYS_faccessat as i64,
+            SYS_faccessat2 as i64,
+            SYS_dup as i64,
+            SYS_dup3 as i64,
+            SYS_fcntl as i64,
+            SYS_ioctl as i64,
+            SYS_pipe2 as i64,
+            SYS_ppoll as i64,
+            SYS_pselect6 as i64,
+            SYS_getpid as i64,
+            SYS_getppid as i64,
+            SYS_gettid as i64,
+            SYS_getuid as i64,
+            SYS_geteuid as i64,
+            SYS_getgid as i64,
+            SYS_getegid as i64,
+            SYS_getgroups as i64,
+            SYS_getcwd as i64,
+            SYS_chdir as i64,
+            SYS_fchdir as i64,
+            SYS_mkdirat as i64,
+            SYS_unlinkat as i64,
+            SYS_renameat2 as i64,
+            SYS_symlinkat as i64,
+            SYS_linkat as i64,
+            SYS_readlinkat as i64,
+            SYS_fchmod as i64,
+            SYS_fchmodat as i64,
+            SYS_fchown as i64,
+            SYS_fchownat as i64,
+            SYS_umask as i64,
+            SYS_utimensat as i64,
+            SYS_mknodat as i64,
+            SYS_mount as i64,
+            SYS_umount2 as i64,
+            SYS_clone as i64,
+            SYS_clone3 as i64,
+            SYS_execve as i64,
+            SYS_execveat as i64,
+            SYS_wait4 as i64,
+            SYS_waitid as i64,
+            SYS_exit as i64,
+            SYS_exit_group as i64,
+            SYS_kill as i64,
+            SYS_tgkill as i64,
+            SYS_tkill as i64,
+            SYS_rt_sigaction as i64,
+            SYS_rt_sigprocmask as i64,
+            SYS_rt_sigreturn as i64,
+            SYS_sigaltstack as i64,
+            SYS_nanosleep as i64,
+            SYS_clock_nanosleep as i64,
+            SYS_clock_gettime as i64,
+            SYS_clock_getres as i64,
+            SYS_gettimeofday as i64,
+            SYS_getrlimit as i64,
+            SYS_setrlimit as i64,
+            SYS_prlimit64 as i64,
+            SYS_prctl as i64,
+            SYS_personality as i64,
+            SYS_set_tid_address as i64,
+            SYS_set_robust_list as i64,
+            SYS_get_robust_list as i64,
+            SYS_futex as i64,
+            SYS_mmap as i64,
+            SYS_munmap as i64,
+            SYS_mprotect as i64,
+            SYS_mremap as i64,
+            SYS_madvise as i64,
+            SYS_brk as i64,
+            SYS_mlock as i64,
+            SYS_munlock as i64,
+            SYS_getdents64 as i64,
+            SYS_getcpu as i64,
+            SYS_getrusage as i64,
+            SYS_restart_syscall as i64,
+            SYS_rseq as i64,
+            SYS_fadvise64 as i64,
+            SYS_mincore as i64,
+            SYS_msync as i64,
+            SYS_sched_yield as i64,
+            SYS_sched_getaffinity as i64,
+            SYS_sched_setaffinity as i64,
+            SYS_getpriority as i64,
+            SYS_setpriority as i64,
+            SYS_capget as i64,
+            SYS_capset as i64,
+            SYS_getrandom as i64,
+            SYS_memfd_create as i64,
+            SYS_eventfd2 as i64,
+            SYS_epoll_create1 as i64,
+            SYS_epoll_ctl as i64,
+            SYS_epoll_pwait as i64,
+            SYS_timerfd_create as i64,
+            SYS_timerfd_settime as i64,
+            SYS_timerfd_gettime as i64,
+            SYS_signalfd4 as i64,
+            SYS_socketpair as i64,
+            SYS_bind as i64,
+            SYS_connect as i64,
+            SYS_listen as i64,
+            SYS_accept as i64,
+            SYS_accept4 as i64,
+            SYS_getsockname as i64,
+            SYS_getpeername as i64,
+            SYS_sendto as i64,
+            SYS_recvfrom as i64,
+            SYS_sendmsg as i64,
+            SYS_recvmsg as i64,
+            SYS_getsockopt as i64,
+            SYS_setsockopt as i64,
+            SYS_shutdown as i64,
+            SYS_socket as i64,
         ];
+        for &nr in common {
+            rules.push(SeccompRule::AllowSyscall(nr));
+        }
+
+        // Legacy syscall names exposed by the x86-64 (and x86) syscall table
+        // but absent from the arm64 unified table.  The sandboxed child process
+        // issues these on such architectures, so they must be allow-listed here.
+        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
+        {
+            let legacy: &[i64] = &[
+                SYS_open as i64,
+                SYS_stat as i64,
+                SYS_lstat as i64,
+                SYS_access as i64,
+                SYS_chmod as i64,
+                SYS_chown as i64,
+                SYS_lchown as i64,
+                SYS_link as i64,
+                SYS_mkdir as i64,
+                SYS_mknod as i64,
+                SYS_rename as i64,
+                SYS_rmdir as i64,
+                SYS_symlink as i64,
+                SYS_unlink as i64,
+                SYS_utime as i64,
+                SYS_utimes as i64,
+                SYS_dup2 as i64,
+                SYS_pipe as i64,
+                SYS_poll as i64,
+                SYS_select as i64,
+                SYS_getdents as i64,
+                SYS_epoll_wait as i64,
+                SYS_fork as i64,
+                SYS_vfork as i64,
+                SYS_pause as i64,
+                SYS_time as i64,
+                SYS_arch_prctl as i64,
+            ];
+            for &nr in legacy {
+                rules.push(SeccompRule::AllowSyscall(nr));
+            }
+        }
+
+        // Permit `AF_UNIX`/`AF_NETLINK` sockets but deny everything else
+        // (notably `AF_INET`/`AF_INET6`).
+        rules.push(SeccompRule::AllowSyscallIfArg(
+            SYS_socket as i64,
+            0,
+            AF_UNIX as u64,
+        ));
+        rules.push(SeccompRule::AllowSyscallIfArg(
+            SYS_socket as i64,
+            0,
+            AF_NETLINK as u64,
+        ));
+
         Self {
             enabled: true,
             action: SeccompAction::Errno(libc::EPERM as u16),
@@ -285,7 +326,16 @@ const BPF_RET: u16 = 0x06;
 const SECCOMP_ARCH_OFFSET: u32 = 4; // offset of `arch` in `struct seccomp_data`
 const SECCOMP_NR_OFFSET: u32 = 0; // offset of `nr` in `struct seccomp_data`
 const SECCOMP_ARG_OFFSET: u32 = 16; // offset of `args[0]` in `struct seccomp_data`
-const AUDIT_ARCH_X86_64: u32 = 0xC000_003E;
+
+/// The `AUDIT_ARCH_*` value for the architecture we are compiling for.  The
+/// BPF program fails closed unless the running CPU matches this exactly, so it
+/// must track the build target.
+#[cfg(target_arch = "x86_64")]
+const SECCOMP_AUDIT_ARCH: u32 = 0xC000_003E; // AUDIT_ARCH_X86_64
+#[cfg(target_arch = "aarch64")]
+const SECCOMP_AUDIT_ARCH: u32 = 0xC000_00B7; // AUDIT_ARCH_AARCH64
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+const SECCOMP_AUDIT_ARCH: u32 = 0xC000_003E; // best-effort fallback
 
 #[allow(dead_code)]
 fn ld_abs(off: u32) -> BpfInsn {
@@ -329,17 +379,22 @@ fn ret(k: u32) -> BpfInsn {
 
 /// Build the classic-BPF program for `profile`.
 ///
-/// The program fails closed: if the CPU architecture is not the expected
-/// x86-64, or if a syscall is not on the allowlist, the configured default
-/// `action` is taken.
+/// The program fails closed: if the CPU architecture is not the expected one,
+/// or if a syscall is not on the allowlist, the configured default `action` is
+/// taken.
+///
+/// The syscall number is re-loaded at the start of every rule so that an
+/// argument-guarded rule which matches the syscall but fails its argument
+/// check does not leave a stale argument value in the accumulator for the next
+/// rule to compare against.
 #[allow(dead_code)]
 pub(crate) fn build_program(profile: &SeccompProfile) -> Vec<BpfInsn> {
     const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
     let mut p: Vec<BpfInsn> = vec![
         // 0: load arch
         ld_abs(SECCOMP_ARCH_OFFSET),
-        // 1: if arch == x86-64 -> next (load nr); else -> wrong-arch kill
-        jeq(AUDIT_ARCH_X86_64, 0, 1),
+        // 1: if arch == expected -> next (load nr); else -> wrong-arch kill
+        jeq(SECCOMP_AUDIT_ARCH, 0, 1),
         // 2: load syscall nr
         ld_abs(SECCOMP_NR_OFFSET),
         // 3: skip the wrong-arch kill that follows
@@ -349,6 +404,8 @@ pub(crate) fn build_program(profile: &SeccompProfile) -> Vec<BpfInsn> {
     ];
 
     for rule in &profile.rules {
+        // (re)load the syscall number for this rule.
+        p.push(ld_abs(SECCOMP_NR_OFFSET));
         match rule {
             SeccompRule::AllowSyscall(nr) => {
                 // if nr matches -> ALLOW; else fall through to next rule
@@ -356,7 +413,9 @@ pub(crate) fn build_program(profile: &SeccompProfile) -> Vec<BpfInsn> {
                 p.push(ret(SECCOMP_RET_ALLOW));
             }
             SeccompRule::AllowSyscallIfArg(nr, arg, val) => {
-                // if nr matches -> load arg; else skip past the arg check + ALLOW
+                // if nr does not match -> skip the arg check + ALLOW and fall
+                // through to the next rule (nr is reloaded at the top of the
+                // next iteration).  If nr matches, load the argument.
                 p.push(jeq(*nr as u32, 0, 3));
                 p.push(ld_abs(SECCOMP_ARG_OFFSET + u32::from(*arg) * 8));
                 // if arg matches -> ALLOW; else fall through to next rule
@@ -429,7 +488,7 @@ mod tests {
         assert_eq!(prog[0].code, BPF_LD | BPF_W | BPF_ABS);
         assert_eq!(prog[0].k, SECCOMP_ARCH_OFFSET);
         assert_eq!(prog[1].code, BPF_JMP | BPF_JEQ | BPF_K);
-        assert_eq!(prog[1].k, AUDIT_ARCH_X86_64);
+        assert_eq!(prog[1].k, SECCOMP_AUDIT_ARCH);
         // final instruction is the default deny
         assert_eq!(prog.last().unwrap().k, SeccompAction::Errno(1).to_ret());
     }
@@ -458,6 +517,26 @@ mod tests {
         // paths and they are reachable only for nr==42.
         let allow_count = prog.iter().filter(|i| i.k == 0x7fff_0000).count();
         assert_eq!(allow_count, 1);
+    }
+
+    #[test]
+    fn arg_guarded_rule_does_not_poison_next_rule() {
+        // A socket() call for AF_INET must be denied, and importantly the
+        // (stale) argument value must not be mistaken for a later syscall
+        // number.  We verify the program still allows an unrelated syscall
+        // that appears after the arg-guarded rule in the profile.
+        let profile = SeccompProfile {
+            enabled: true,
+            action: SeccompAction::Errno(1),
+            rules: vec![
+                SeccompRule::AllowSyscallIfArg(41 /* socket */, 0, 1 /* AF_UNIX */),
+                SeccompRule::AllowSyscall(42 /* arbitrary later syscall */),
+            ],
+        };
+        let prog = build_program(&profile);
+        // Both rules must still emit an ALLOW: socket(AF_UNIX) and nr==42.
+        let allow_count = prog.iter().filter(|i| i.k == 0x7fff_0000).count();
+        assert_eq!(allow_count, 2);
     }
 
     #[cfg(target_os = "linux")]
