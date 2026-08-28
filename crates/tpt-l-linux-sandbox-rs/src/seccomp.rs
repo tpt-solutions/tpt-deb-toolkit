@@ -228,7 +228,10 @@ impl SeccompProfile {
             SYS_getsockopt as i64,
             SYS_setsockopt as i64,
             SYS_shutdown as i64,
-            SYS_socket as i64,
+            // NOTE: `socket` is intentionally NOT allowlisted here.  It is
+            // governed by the argument-guarded rules below so that only
+            // `AF_UNIX`/`AF_NETLINK` sockets are permitted and `AF_INET`/
+            // `AF_INET6` remain denied.
         ];
         for &nr in common {
             rules.push(SeccompRule::AllowSyscall(nr));

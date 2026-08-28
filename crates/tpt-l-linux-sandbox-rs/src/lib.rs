@@ -449,14 +449,22 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn namespaces_available() -> bool {
-        // Detect whether the host permits unprivileged user namespaces, which
-        // the sandbox depends on.  When they are disabled (common inside some
-        // CI containers) `unshare(CLONE_NEWUSER)` fails with EPERM and the
-        // sandbox cannot isolate anything; such tests are skipped instead.
+        // Detect whether the host permits the full set of namespaces that
+        // `run_namespaced` actually requests for the default maintainer-script
+        // profile: user, PID, mount, network, and IPC.  Probing only
+        // `CLONE_NEWUSER` is insufficient because some CI containers allow an
+        // unprivileged user namespace but block `CLONE_NEWNET`/`CLONE_NEWIPC`
+        // via AppArmor/seccomp; in that case `run_namespaced` would fail at
+        // runtime rather than skip, so we gate the tests on the whole set.
         unsafe {
             let pid = libc::fork();
             if pid == 0 {
-                let ok = libc::unshare(libc::CLONE_NEWUSER) == 0;
+                let flags = libc::CLONE_NEWUSER
+                    | libc::CLONE_NEWPID
+                    | libc::CLONE_NEWNS
+                    | libc::CLONE_NEWNET
+                    | libc::CLONE_NEWIPC;
+                let ok = libc::unshare(flags) == 0;
                 libc::_exit(if ok { 0 } else { 1 });
             }
             let mut status: libc::c_int = 0;
