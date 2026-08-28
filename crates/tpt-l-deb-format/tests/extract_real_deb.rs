@@ -31,7 +31,10 @@ fn extract_real_deb_and_verify_contents() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&bin).expect("stat bin").permissions().mode();
+        let mode = std::fs::metadata(&bin)
+            .expect("stat bin")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o111, 0o111, "executable bit should be preserved");
     }
     let _ = Path::new(""); // keep `Path` import meaningful on all platforms
@@ -46,7 +49,14 @@ fn streaming_entries_match_extracted_files() {
     let names: Vec<String> = ents
         .entries()
         .expect("iterate")
-        .map(|e| e.unwrap().path().unwrap().into_owned().to_string_lossy().into_owned())
+        .map(|e| {
+            e.unwrap()
+                .path()
+                .unwrap()
+                .into_owned()
+                .to_string_lossy()
+                .into_owned()
+        })
         .collect();
     assert!(
         names.iter().any(|p| p.ends_with("usr/bin/foo")),
@@ -63,7 +73,10 @@ fn extract_real_deb_fixture_if_present() {
         return;
     };
     let deb = DebFile::open(Path::new(&path)).expect("open real .deb");
-    assert!(!deb.entries().is_empty(), "real .deb should have payload entries");
+    assert!(
+        !deb.entries().is_empty(),
+        "real .deb should have payload entries"
+    );
     assert!(
         deb.metadata().package_name().is_some(),
         "real .deb should expose a Package field"

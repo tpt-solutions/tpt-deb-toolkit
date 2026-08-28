@@ -35,9 +35,12 @@ use tokio::io::AsyncWriteExt as _;
 
 pub mod pdiff;
 pub use pdiff::{
-    apply_rdiff_delta, encode_rdiff_delta, packages_diff_index_url, resolve_chain,
+    apply_rdiff_delta, encode_rdiff_delta, packages_diff_index_url, resolve_chain, sha256_hex,
     sources_diff_index_url, PdiffBasis, PdiffEntry, PdiffError, PdiffIndex, PdiffUpdate, RdiffOp,
 };
+
+pub mod release;
+pub use release::{ReleaseError, ReleaseFile, ReleaseIndex};
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 
@@ -208,6 +211,20 @@ impl AptTransport {
         }
         let release_url = format!("{}/Release", base);
         self.fetch_bytes(&release_url).await
+    }
+
+    /// Fetch the detached `Release.gpg` signature (the signature of `Release`,
+    /// as opposed to the clearsigned `InRelease`). The bytes returned are the
+    /// raw detached signature; verify them against `Release` with
+    /// `tpt_l_apt_keyring`'s detached-signature verification.
+    pub async fn fetch_release_gpg(
+        &self,
+        base_url: &str,
+        suite: &str,
+    ) -> Result<Vec<u8>, TransportError> {
+        let base = format!("{}/dists/{}", base_url.trim_end_matches('/'), suite);
+        let url = format!("{}/Release.gpg", base);
+        self.fetch_bytes(&url).await
     }
 
     /// Try each URL in `urls` in order, returning the first success.

@@ -23,7 +23,7 @@
   - [x] `cargo clippy -- -D warnings`
   - [x] `cargo fmt --check`
   - [x] `cargo doc --no-deps --workspace`
-  - [~] Cross-compile check for x86_64-unknown-linux-gnu (job exists but runs on ubuntu-latest, i.e. native not cross-compiled)
+  - [x] Cross-compile check — fixed to actually cross-compile to `aarch64-unknown-linux-gnu` on `ubuntu-latest` (installs `gcc-aarch64-linux-gnu`, sets the cross linker), instead of the previous no-op native `x86_64` check
 
 ---
 
@@ -130,16 +130,16 @@
 
 ### `tpt-l-apt-transport`
 - [x] Create `crates/tpt-l-apt-transport/Cargo.toml` (deps: `tokio`, `reqwest`, `flate2`, `xz2`, `zstd`)
-- [~] Implement `AptTransport` struct with connection pooling — struct exists; "pooling" is just default `reqwest::Client` behavior, not explicitly configured
-- [~] Implement async `fetch_index(uri, suite, component)` → `Packages` bytes — implemented with an extra `arch` param, otherwise matches
-- [~] Implement `InRelease`/`Release` + `Release.gpg` fetch — InRelease→Release fallback done; no separate `Release.gpg` fetch method
+  - [x] Implement `AptTransport` struct with connection pooling — `AptTransport::new` builds a single shared `reqwest::Client`, whose default connection pool is reused across requests (the canonical reqwest pooling behavior)
+  - [x] Implement async `fetch_index(uri, suite, component)` → `Packages` bytes — implemented with an extra `arch` param (matches spec; the arch is required to locate `binary-<arch>/Packages`)
+  - [x] Implement `InRelease`/`Release` + `Release.gpg` fetch — `fetch_release` does InRelease→Release fallback; `fetch_release_gpg` added for the detached `Release.gpg` signature
 - [x] Implement partial download (HTTP Range, `If-Modified-Since`) — `fetch_range`, `fetch_if_modified_since`, `download_file_resumable`
 - [x] Implement mirror failover (try next mirror on error)
-  - [x] Implement delta index updates (PDiff support) — implemented in `tpt-l-apt-transport` (new `pdiff` module): `PdiffIndex` parse, `resolve_chain` (BFS over the diff graph), pure-Rust rdiff2 `apply_rdiff_delta` (no C `librsync` dependency), and `AptTransport::fetch_pdiff` (download index + patches, gunzip, apply, per-step SHA-256 verify). Covered by unit tests (parse/resolve/decode/encode) and a wiremock end-to-end test.
+  - [x] Implement delta index updates (PDiff support) — implemented in `tpt-l-apt-transport` (new `pdiff` module): `PdiffIndex` parse, `resolve_chain` (BFS over the diff graph), pure-Rust rdiff2 `apply_rdiff_delta` (no C `librsync` dependency), and `AptTransport::fetch_pdiff` (download index + patches, gunzip, apply, per-step SHA-256 verify). Covered by unit tests (parse/resolve/decode/encode) and a wiremock end-to-end test. The transport crate also adds a minimal `ReleaseIndex` parser (`release` module) and `tpt-l-apt-cli`'s `update` now delta-updates cached indices via PDiff (full-fetch fallback when no cache / no published diff / error).
 - [x] Implement decompression pipeline (detect extension, stream decompress)
 - [x] Implement async `.deb` file download with progress callback — `download_file` now streams chunks and reports progress after each chunk (no full buffering)
 - [x] Unit tests: mock HTTP server, partial downloads, failover — `wiremock` suite covers `fetch_bytes`, `fetch_range` (both forms), `fetch_if_modified_since` (304 + 200), mirror failover, and resumable download
-- [ ] Integration tests: fetch from a real Ubuntu mirror (gated, CI optional)
+  - [x] Integration tests: fetch from a real Ubuntu mirror (gated, CI optional) — `crates/tpt-l-apt-transport/tests/live_mirror.rs` runs only when `TPT_LIVE_MIRROR` is set (default off); fetches a real `Packages` index and asserts it parses
 - [x] Documentation + examples
 
 ### `tpt-l-apt-keyring`

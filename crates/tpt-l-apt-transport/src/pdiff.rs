@@ -118,11 +118,7 @@ impl PdiffIndex {
 /// few patches over a single large merged patch). Returns `None` when no chain
 /// exists (e.g. the cached revision is not an ancestor of the target among the
 /// published diffs). An empty chain means `current == target` (already current).
-pub fn resolve_chain(
-    index: &PdiffIndex,
-    current: &str,
-    target: &str,
-) -> Option<Vec<PdiffEntry>> {
+pub fn resolve_chain(index: &PdiffIndex, current: &str, target: &str) -> Option<Vec<PdiffEntry>> {
     let current = current.to_ascii_lowercase();
     let target = target.to_ascii_lowercase();
     if current == target {
@@ -308,7 +304,7 @@ pub fn encode_rdiff_delta(ops: &[RdiffOp]) -> Vec<u8> {
 
 // ─── Transport integration ────────────────────────────────────────────────────
 
-use crate::{TransportError, AptTransport};
+use crate::{AptTransport, TransportError};
 
 /// The locally cached index a delta chain is applied to.
 #[derive(Debug, Clone, Copy)]
@@ -360,9 +356,8 @@ impl AptTransport {
         let index = PdiffIndex::parse(&String::from_utf8_lossy(&index_bytes))
             .map_err(|e| TransportError::Pdiff(e.to_string()))?;
 
-        let chain = resolve_chain(&index, &current_hash, target_sha256).ok_or_else(|| {
-            TransportError::Pdiff("no delta chain from current to target".into())
-        })?;
+        let chain = resolve_chain(&index, &current_hash, target_sha256)
+            .ok_or_else(|| TransportError::Pdiff("no delta chain from current to target".into()))?;
 
         // Patch paths are relative to the directory containing the `.diff/`
         // folder, i.e. the parent of `/Packages.diff/`.
@@ -399,12 +394,7 @@ impl AptTransport {
 }
 
 /// Build the standard `*.diff/Index` URL for a binary `Packages` index.
-pub fn packages_diff_index_url(
-    base_url: &str,
-    suite: &str,
-    component: &str,
-    arch: &str,
-) -> String {
+pub fn packages_diff_index_url(base_url: &str, suite: &str, component: &str, arch: &str) -> String {
     format!(
         "{}/dists/{}/{}/binary-{}/Packages.diff/Index",
         base_url.trim_end_matches('/'),
@@ -450,7 +440,10 @@ cafe0000   feedface  99    Packages.diff/cafe0000_feedface.gz
         assert_eq!(idx.entries.len(), 2);
         assert_eq!(idx.entries[0].old_sha256, "deadbeef");
         assert_eq!(idx.entries[0].size, 1234);
-        assert_eq!(idx.entries[0].patch_file, "Packages.diff/deadbeef_cafe0000.gz");
+        assert_eq!(
+            idx.entries[0].patch_file,
+            "Packages.diff/deadbeef_cafe0000.gz"
+        );
     }
 
     #[test]
@@ -460,10 +453,7 @@ cafe0000   feedface  99    Packages.diff/cafe0000_feedface.gz
 
     #[test]
     fn resolve_chain_single_hop() {
-        let idx = PdiffIndex::parse(
-            "aaaa bbbb 1 p/a_b.gz\nbbbb cccc 1 p/b_c.gz\n",
-        )
-        .unwrap();
+        let idx = PdiffIndex::parse("aaaa bbbb 1 p/a_b.gz\nbbbb cccc 1 p/b_c.gz\n").unwrap();
         let chain = resolve_chain(&idx, "aaaa", "cccc").unwrap();
         assert_eq!(chain.len(), 2);
         assert_eq!(chain[0].old_sha256, "aaaa");
@@ -503,9 +493,9 @@ cafe0000   feedface  99    Packages.diff/cafe0000_feedface.gz
         let basis = b"The quick brown fox jumps over the lazy dog";
         // new = "The quick RED fox jumps over the lazy dog"
         let delta = encode_rdiff_delta(&[
-            RdiffOp::Copy(0, 10),     // "The quick "
+            RdiffOp::Copy(0, 10),      // "The quick "
             RdiffOp::Literal(b"RED "), // "RED "
-            RdiffOp::Copy(16, 27),    // "fox jumps over the lazy dog"
+            RdiffOp::Copy(16, 27),     // "fox jumps over the lazy dog"
         ]);
         let out = apply_rdiff_delta(basis, &delta).unwrap();
         assert_eq!(out, b"The quick RED fox jumps over the lazy dog");
@@ -549,7 +539,11 @@ cafe0000   feedface  99    Packages.diff/cafe0000_feedface.gz
 
         let index_text = format!(
             "{} {} {} Packages.diff/{}_{}.gz\n",
-            current, target, patch.len(), current, target
+            current,
+            target,
+            patch.len(),
+            current,
+            target
         );
 
         let mock = MockServer::start().await;
@@ -594,10 +588,7 @@ cafe0000   feedface  99    Packages.diff/cafe0000_feedface.gz
         // No mocks needed: with no current basis we short-circuit to NoDelta.
         let t = AptTransport::with_default_config().unwrap();
         let url = packages_diff_index_url(&mock.uri(), "stable", "main", "amd64");
-        let result = t
-            .fetch_pdiff(&url, None, "deadbeef")
-            .await
-            .unwrap();
+        let result = t.fetch_pdiff(&url, None, "deadbeef").await.unwrap();
         assert!(matches!(result, PdiffUpdate::NoDelta));
     }
 }

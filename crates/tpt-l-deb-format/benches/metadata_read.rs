@@ -33,7 +33,9 @@ fn make_large_deb() -> Result<Vec<u8>, DebError> {
     let mut payload = Vec::with_capacity(TARGET_BYTES);
     let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
     while payload.len() < TARGET_BYTES {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         payload.extend_from_slice(&seed.to_le_bytes());
     }
     let data_tar = make_tar_gz(&[("usr/lib/bigblob.bin", &payload, 0o644)]);
@@ -132,5 +134,8 @@ fn main() {
         "  speed-up of metadata-only path:         {:.1}x",
         full_elapsed.as_secs_f64() / meta_elapsed.as_secs_f64().max(f64::MIN_POSITIVE)
     );
-    println!("  package name: {}", meta.package_name().unwrap_or("<none>"));
+    println!(
+        "  package name: {}",
+        meta.package_name().unwrap_or("<none>")
+    );
 }

@@ -12,6 +12,7 @@ use clap::CommandFactory;
 use serde::Serialize;
 
 use tpt_l_apt_solver::{Resolver, Universe};
+use tpt_l_apt_transport::{sha256_hex, AptTransport, PdiffBasis, PdiffUpdate, ReleaseIndex};
 use tpt_l_control_file::BinaryPackage;
 use tpt_l_deb_format::DebFile;
 use tpt_l_dpkg_db::StatusDb;
@@ -155,42 +156,101 @@ impl Apt {
     ///
     /// Requires network access. Each fetched index is written to the cache
     /// directory as `<host>_<suite>_<component>.packages`.
+    /// Fetch and cache `Packages` indices from all configured sources.
+    ///
+    /// Requires network access. Each index is delta-updated via PDiff when a
+    /// cached revision exists and the source publishes a `*.diff/Index`
+    /// (verified against the `Release` target SHA-256); otherwise it is fetched
+    /// in full. Cached indices are written to the cache directory as
+    /// `<host>_<suite>_<component>.packages`.
     pub async fn update(&self) -> Result<usize> {
         let sources = self.load_sources()?;
         std::fs::create_dir_all(&self.cache_dir)?;
-        let transport = tpt_l_apt_transport::AptTransport::with_default_config()?;
+        let transport = AptTransport::with_default_config()?;
 
-        // Collect every (url, destination) pair first so we know the total.
-        let mut tasks: Vec<(String, PathBuf)> = Vec::new();
+        // Build the work list. We fetch each source's `Release` once (to learn
+        // the target SHA-256 of every `Packages` index and whether a PDiff
+        // `*.diff/Index` is published), then per component/arch decide whether to
+        // delta-update from the cached index or re-fetch it whole.
+        let mut work: Vec<(SourceEntry, String, Option<ReleaseIndex>)> = Vec::new();
         for entry in sources
             .entries()
             .filter(|e| e.enabled && e.source_type == tpt_l_sources_list::SourceType::Binary)
+            .cloned()
         {
+            let release = match transport.fetch_release(&entry.uri, &entry.suite).await {
+                Ok(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    ReleaseIndex::parse(&text).ok()
+                }
+                Err(e) => {
+                    tracing::debug!(source = %entry.uri, error = %e, "could not fetch Release; indices will be full-fetched");
+                    None
+                }
+            };
             for component in &entry.components {
-                let url = packages_url(entry, component, "amd64");
-                let slug = url_slug(&entry.uri, &entry.suite, component);
-                let out = self.cache_dir.join(format!("{slug}.packages"));
-                tasks.push((url, out));
+                work.push((entry.clone(), component.clone(), release.clone()));
             }
         }
 
         let pb = make_progress(
             self.progress,
-            tasks.len() as u64,
-            "Fetching indices [{bar:20.cyan}] {pos}/{len} ({eta})",
+            work.len() as u64,
+            "Updating indices [{bar:20.cyan}] {pos}/{len} ({eta})",
         );
 
-        let mut fetched = 0;
-        for (url, out) in &tasks {
-            if let Some(pb) = &pb {
-                pb.set_message(url.clone());
-            }
-            let bytes = transport
-                .fetch_bytes(url)
-                .await
-                .with_context(|| format!("fetching {url}"))?;
-            let bytes = maybe_gunzip(&bytes);
-            std::fs::write(out, bytes)?;
+        let mut fetched = 0usize;
+        for (entry, component, release) in &work {
+            let slug = url_slug(&entry.uri, &entry.suite, component);
+            let out = self.cache_dir.join(format!("{slug}.packages"));
+            let target = release
+                .as_ref()
+                .and_then(|r| r.packages_sha256(component, "amd64"));
+
+            // Try a PDiff delta update from the cached index, falling back to a
+            // full fetch when there is no cache, no published diff, or any error.
+            let bytes = match target {
+                Some(target) => {
+                    let basis = if out.exists() {
+                        std::fs::read(&out).ok().map(|b| (sha256_hex(&b), b))
+                    } else {
+                        None
+                    };
+                    let diff_url = tpt_l_apt_transport::packages_diff_index_url(
+                        &entry.uri,
+                        &entry.suite,
+                        component,
+                        "amd64",
+                    );
+                    let pdiff_result = match &basis {
+                        Some((hash, data)) => {
+                            transport
+                                .fetch_pdiff(
+                                    &diff_url,
+                                    Some(&PdiffBasis {
+                                        sha256: hash.as_str(),
+                                        bytes: data.as_slice(),
+                                    }),
+                                    target,
+                                )
+                                .await
+                        }
+                        None => Ok(PdiffUpdate::NoDelta),
+                    };
+                    match pdiff_result {
+                        Ok(PdiffUpdate::Reconstructed(b)) => {
+                            tracing::debug!(%slug, "updated index via PDiff");
+                            b
+                        }
+                        Ok(PdiffUpdate::NoDelta) | Err(_) => {
+                            Self::full_fetch_index(&transport, entry, component).await?
+                        }
+                    }
+                }
+                None => Self::full_fetch_index(&transport, entry, component).await?,
+            };
+
+            std::fs::write(&out, &bytes)?;
             fetched += 1;
             if let Some(pb) = &pb {
                 pb.inc(1);
@@ -200,6 +260,20 @@ impl Apt {
             pb.finish_and_clear();
         }
         Ok(fetched)
+    }
+
+    /// Fetch a single `Packages` index in full (the PDiff fallback path).
+    async fn full_fetch_index(
+        transport: &AptTransport,
+        entry: &SourceEntry,
+        component: &str,
+    ) -> Result<Vec<u8>> {
+        let url = packages_url(entry, component, "amd64");
+        let bytes = transport
+            .fetch_bytes(&url)
+            .await
+            .with_context(|| format!("fetching {url}"))?;
+        Ok(maybe_gunzip(&bytes))
     }
 
     fn load_sources(&self) -> Result<SourcesList> {
